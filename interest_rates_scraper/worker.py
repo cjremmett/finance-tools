@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -24,27 +25,31 @@ async def run_worker() -> None:
     client = await Client.connect(
         settings.temporal_address, namespace=settings.temporal_namespace
     )
-    worker = Worker(
-        client,
-        task_queue=settings.temporal_task_queue,
-        workflows=[InterestRateScrapeWorkflow],
-        activities=[
-            scrape_fed_rate_activity,
-            scrape_kalshi_apy_activity,
-            scrape_marcus_savings_activity,
-            scrape_marcus_cds_activity,
-            persist_interest_rates_activity,
-            send_discord_notification_activity,
-            mark_notification_sent_activity,
-        ],
-    )
-    logging.info(
-        "Polling Temporal at %s/%s on task queue %s",
-        settings.temporal_address,
-        settings.temporal_namespace,
-        settings.temporal_task_queue,
-    )
-    await worker.run()
+    with ThreadPoolExecutor(
+        max_workers=8, thread_name_prefix="temporal-activity"
+    ) as activity_executor:
+        worker = Worker(
+            client,
+            task_queue=settings.temporal_task_queue,
+            workflows=[InterestRateScrapeWorkflow],
+            activities=[
+                scrape_fed_rate_activity,
+                scrape_kalshi_apy_activity,
+                scrape_marcus_savings_activity,
+                scrape_marcus_cds_activity,
+                persist_interest_rates_activity,
+                send_discord_notification_activity,
+                mark_notification_sent_activity,
+            ],
+            activity_executor=activity_executor,
+        )
+        logging.info(
+            "Polling Temporal at %s/%s on task queue %s",
+            settings.temporal_address,
+            settings.temporal_namespace,
+            settings.temporal_task_queue,
+        )
+        await worker.run()
 
 
 def main() -> None:
