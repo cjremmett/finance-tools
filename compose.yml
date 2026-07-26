@@ -40,6 +40,7 @@ services:
       TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-interest-rates}
       DATABASE_URL: postgresql+psycopg://finance-tools:finance-tools@postgresql:5432/finance_tools
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:?Set DISCORD_WEBHOOK_URL in .env}
+      FRED_API_KEY: ${FRED_API_KEY:?Set FRED_API_KEY in .env}
       HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-20}
 
 volumes:

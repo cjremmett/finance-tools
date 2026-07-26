@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from interest_rates_scraper.scrapers.common import ScrapeError
-from interest_rates_scraper.scrapers.fed import _latest_value
+from interest_rates_scraper.scrapers.fed import _latest_value, scrape_fed
 from interest_rates_scraper.scrapers.kalshi import parse_kalshi
 from interest_rates_scraper.scrapers.marcus import (
     parse_marcus_cds,
@@ -12,8 +12,18 @@ from interest_rates_scraper.scrapers.marcus import (
 
 
 def test_fed_uses_latest_non_missing_value() -> None:
-    csv_text = "DATE,DFEDTARL\n2026-01-01,3.50\n2026-01-02,.\n"
-    assert _latest_value(csv_text, "DFEDTARL") == ("2026-01-01", "3.5")
+    payload = {
+        "observations": [
+            {"date": "2026-01-02", "value": "."},
+            {"date": "2026-01-01", "value": "3.50"},
+        ]
+    }
+    assert _latest_value(payload, "DFEDTARL") == ("2026-01-01", "3.5")
+
+
+def test_fed_requires_api_key() -> None:
+    with pytest.raises(ScrapeError, match="FRED_API_KEY is required"):
+        scrape_fed(20, None)
 
 
 def test_kalshi_parser_is_scoped_to_rate_sentence() -> None:

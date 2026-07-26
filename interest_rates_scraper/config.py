@@ -11,6 +11,7 @@ class Settings:
     temporal_task_queue: str
     database_url: str
     discord_webhook_url: str | None
+    fred_api_key: str | None
     http_timeout_seconds: float
 
     @classmethod
@@ -24,5 +25,6 @@ class Settings:
                 "postgresql+psycopg://finance-tools:finance-tools@postgresql:5432/finance_tools",
             ),
             discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL"),
+            fred_api_key=os.getenv("FRED_API_KEY"),
             http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS", "20")),
         )

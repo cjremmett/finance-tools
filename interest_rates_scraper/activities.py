@@ -21,7 +21,8 @@ from interest_rates_scraper.scrapers.marcus import (
 
 @activity.defn(name="scrape_fed_rate")
 def scrape_fed_rate_activity() -> ScrapeResult:
-    return scrape_fed(Settings.from_env().http_timeout_seconds)
+    settings = Settings.from_env()
+    return scrape_fed(settings.http_timeout_seconds, settings.fred_api_key)
 
 
 @activity.defn(name="scrape_kalshi_apy")

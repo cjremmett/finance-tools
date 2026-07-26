@@ -18,7 +18,11 @@ Copy `.env.example` to `.env` and set:
 
 ```dotenv
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+FRED_API_KEY=your-fred-api-key
 ```
+
+The Federal Reserve activity uses the official FRED API. Keep its API key in
+`.env`; that file is excluded from Git.
 
 The default `TEMPORAL_ADDRESS=host.docker.internal:7233` connects from the
 worker container to a Temporal frontend published on port 7233 of the same
