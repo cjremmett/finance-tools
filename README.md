@@ -1,6 +1,6 @@
 # Finance Tools
 
-This repository contains Temporal workers that monitor:
+This repository contains a shared Temporal worker pool that monitors:
 
 - The Federal Reserve's target federal funds range.
 - Kalshi's APY for eligible prediction-account cash and open positions.
@@ -8,9 +8,10 @@ This repository contains Temporal workers that monitor:
 - Every CD rate currently advertised by Marcus.
 - Newly created Kalshi prediction markets in configured categories.
 
-Each source is scraped in an independent Temporal activity. A workflow runs all
-four activities concurrently, saves every successful result to PostgreSQL, and
-sends a Discord webhook message when rates or products change. Successful
+The worker process registers both workflows and all of their activities on the
+single `finance-tools` task queue. The interest-rate workflow runs its four
+source activities concurrently, saves every successful result to PostgreSQL,
+and sends a Discord webhook message when rates or products change. Successful
 sources are retained even if another source exhausts its retries.
 
 ## Configuration
@@ -29,16 +30,17 @@ The default `TEMPORAL_ADDRESS=host.docker.internal:7233` connects from the
 worker container to a Temporal frontend published on port 7233 of the same
 Linux host. Override it if Temporal is available under another hostname.
 
-The worker registers this public Temporal contract:
+Every replica in the worker pool registers this complete Temporal contract:
 
-| Setting | Default |
-| --- | --- |
-| Workflow type | `InterestRateScrapeWorkflow` |
-| Task queue | `interest-rates` |
-| Namespace | `default` |
-| Workflow input | None |
+| Workflow type | Task queue | Input |
+| --- | --- | --- |
+| `InterestRateScrapeWorkflow` | `finance-tools` | None |
+| `KalshiMarketMonitorWorkflow` | `finance-tools` | None |
 
-Temporal Schedules are intentionally not managed by this repository.
+The namespace defaults to `default`. Do not run workers with different workflow
+registrations on the shared queue; every `finance-tools` worker must register
+both workflow types and every activity. Temporal Schedules are configured
+externally through the CLI rather than managed by this repository.
 
 ## Run with Docker
 
@@ -48,8 +50,15 @@ docker compose logs -f worker
 ```
 
 The Compose project starts PostgreSQL 18, applies Alembic migrations, and then
-starts the worker. PostgreSQL is published on host port `11001` for other tools
-and projects in this repository:
+starts one combined worker service. Scale that service when additional worker
+capacity or redundancy is needed:
+
+```bash
+docker compose up -d --scale worker=2
+```
+
+PostgreSQL is published on host port `11001` for other tools and projects in
+this repository:
 
 ```text
 Host: <Docker host address>
@@ -73,24 +82,22 @@ To start one check manually with the Temporal CLI:
 ```bash
 temporal workflow start \
   --type InterestRateScrapeWorkflow \
-  --task-queue interest-rates \
+  --task-queue finance-tools \
   --workflow-id "interest-rates-$(date +%s)"
 ```
 
 ## Kalshi market monitor
 
-The `KalshiMarketMonitorWorkflow` runs on the `kalshi-markets` task queue by
-default. Temporal Schedules remain external to this repository, so the workflow
-may be started daily, hourly, or at any other cadence:
+`KalshiMarketMonitorWorkflow` runs on the same `finance-tools` task queue:
 
 ```bash
 temporal workflow start \
   --type KalshiMarketMonitorWorkflow \
-  --task-queue kalshi-markets \
+  --task-queue finance-tools \
   --workflow-id "kalshi-markets-$(date +%s)"
 ```
 
-Configure the dedicated worker with:
+Configure the shared worker with:
 
 ```dotenv
 KALSHI_API_KEY_ID=your-read-only-key-id
@@ -112,6 +119,33 @@ and leave the cutoff unchanged.
 The downloaded key files under `kalshi_markets/` are not read by the worker.
 After putting the key ID and a base64-encoded PEM in `.env`, delete those local
 plaintext files manually if they are no longer needed.
+
+## Temporal Schedules
+
+The following schedules run interest-rate checks hourly on the hour and Kalshi
+market checks daily at 5:00 a.m. Eastern:
+
+```bash
+temporal schedule create \
+  --schedule-id interest-rates-hourly \
+  --cron "0 * * * *" \
+  --overlap-policy Skip \
+  --workflow-id interest-rates-hourly \
+  --type InterestRateScrapeWorkflow \
+  --task-queue finance-tools
+
+temporal schedule create \
+  --schedule-id kalshi-markets-daily \
+  --cron "0 5 * * *" \
+  --time-zone "America/New_York" \
+  --overlap-policy Skip \
+  --workflow-id kalshi-markets-daily \
+  --type KalshiMarketMonitorWorkflow \
+  --task-queue finance-tools
+```
+
+Add `--address` and `--namespace` when the CLI is not already configured for
+the intended Temporal frontend and namespace.
 
 ## Local development
 

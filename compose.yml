@@ -37,25 +37,10 @@ services:
     environment:
       TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-host.docker.internal:7233}
       TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
-      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-interest-rates}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-finance-tools}
       DATABASE_URL: postgresql+psycopg://finance-tools:finance-tools@postgresql:5432/finance_tools
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:?Set DISCORD_WEBHOOK_URL in .env}
       FRED_API_KEY: ${FRED_API_KEY:?Set FRED_API_KEY in .env}
-      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-20}
-
-  kalshi-market-worker:
-    build: .
-    restart: unless-stopped
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-host.docker.internal:7233}
-      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
-      KALSHI_TEMPORAL_TASK_QUEUE: ${KALSHI_TEMPORAL_TASK_QUEUE:-kalshi-markets}
-      DATABASE_URL: postgresql+psycopg://finance-tools:finance-tools@postgresql:5432/finance_tools
       KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID:?Set KALSHI_API_KEY_ID in .env}
       KALSHI_PRIVATE_KEY_BASE64: ${KALSHI_PRIVATE_KEY_BASE64:?Set KALSHI_PRIVATE_KEY_BASE64 in .env}
       KALSHI_CATEGORY_WHITELIST: ${KALSHI_CATEGORY_WHITELIST:?Set KALSHI_CATEGORY_WHITELIST in .env}
