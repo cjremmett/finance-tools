@@ -104,6 +104,7 @@ KALSHI_API_KEY_ID=your-read-only-key-id
 KALSHI_PRIVATE_KEY_BASE64=base64-encoded-private-key-pem
 KALSHI_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 KALSHI_CATEGORY_WHITELIST=Economics,Elections,Financials,Politics,Science and Technology
+KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS=600
 ```
 
 The first run establishes a cutoff without backfilling old markets. Later runs
@@ -115,6 +116,14 @@ the worker stores it and sends a separate category-release message; the new
 category remains excluded from market alerts until it is explicitly added to
 `KALSHI_CATEGORY_WHITELIST`. Exhausted polling retries send a failure message
 and leave the cutoff unchanged.
+
+The polling window's upper bound is captured when the workflow starts. If
+Kalshi returns a new market before its event metadata becomes visible, the
+worker retains that market response and retries only the unresolved events
+with exponential backoff for up to
+`KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS` (ten minutes by default). A
+successful run saves the original upper bound as its next cutoff, so markets
+created while event resolution is waiting are included in the following run.
 
 The downloaded key files under `kalshi_markets/` are not read by the worker.
 After putting the key ID and a base64-encoded PEM in `.env`, delete those local

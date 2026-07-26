@@ -24,6 +24,7 @@ class Settings:
     http_timeout_seconds: float
     discord_batch_delay_seconds: float
     kalshi_requests_per_second: float
+    kalshi_event_resolution_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -38,12 +39,19 @@ class Settings:
             raise RuntimeError("KALSHI_CATEGORY_WHITELIST must not be empty")
         batch_delay = float(os.getenv("KALSHI_DISCORD_BATCH_DELAY_SECONDS", "1"))
         requests_per_second = float(os.getenv("KALSHI_REQUESTS_PER_SECOND", "10"))
+        event_resolution_timeout = float(
+            os.getenv("KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS", "600")
+        )
         if batch_delay < 0:
             raise RuntimeError(
                 "KALSHI_DISCORD_BATCH_DELAY_SECONDS must be non-negative"
             )
         if requests_per_second <= 0:
             raise RuntimeError("KALSHI_REQUESTS_PER_SECOND must be positive")
+        if event_resolution_timeout <= 0:
+            raise RuntimeError(
+                "KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS must be positive"
+            )
         return cls(
             temporal_address=os.getenv("TEMPORAL_ADDRESS", "localhost:7233"),
             temporal_namespace=os.getenv("TEMPORAL_NAMESPACE", "default"),
@@ -61,4 +69,5 @@ class Settings:
             http_timeout_seconds=float(os.getenv("HTTP_TIMEOUT_SECONDS", "20")),
             discord_batch_delay_seconds=batch_delay,
             kalshi_requests_per_second=requests_per_second,
+            kalshi_event_resolution_timeout_seconds=event_resolution_timeout,
         )

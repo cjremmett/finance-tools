@@ -37,7 +37,7 @@ class KalshiMarketMonitorWorkflow:
                         workflow_run_id=info.run_id,
                         observed_at=workflow.now().isoformat(),
                     ),
-                    start_to_close_timeout=timedelta(minutes=10),
+                    start_to_close_timeout=timedelta(minutes=15),
                     schedule_to_close_timeout=timedelta(minutes=35),
                     retry_policy=retry_policy,
                     result_type=StageResult,

@@ -15,6 +15,8 @@ from kalshi_markets.config import Settings
 from kalshi_markets.models import MarketFetchResult, NewMarket
 
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
+EVENT_RETRY_INITIAL_DELAY_SECONDS = 5.0
+EVENT_RETRY_MAX_DELAY_SECONDS = 60.0
 
 
 def _parse_datetime(value: str) -> datetime:
@@ -114,6 +116,56 @@ class KalshiClient:
             )
         return categories
 
+    def _fetch_events(
+        self, event_tickers: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        events: dict[str, dict[str, Any]] = {}
+        deadline = (
+            time.monotonic()
+            + self.settings.kalshi_event_resolution_timeout_seconds
+        )
+        delay = EVENT_RETRY_INITIAL_DELAY_SECONDS
+        last_error: Exception | None = None
+
+        while True:
+            unresolved = sorted(set(event_tickers) - set(events))
+            try:
+                for offset in range(0, len(unresolved), 50):
+                    chunk = unresolved[offset : offset + 50]
+                    rows = self._paginate(
+                        "/events",
+                        "events",
+                        {"limit": 200, "tickers": ",".join(chunk)},
+                    )
+                    for row in rows:
+                        if row.get("event_ticker"):
+                            events[str(row["event_ticker"])] = row
+                last_error = None
+            except (requests.RequestException, RuntimeError) as error:
+                last_error = error
+
+            unresolved = sorted(set(event_tickers) - set(events))
+            if not unresolved:
+                return events
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                detail = (
+                    f"; last endpoint error: {last_error}"
+                    if last_error is not None
+                    else ""
+                )
+                raise RuntimeError(
+                    "Kalshi events could not be resolved after "
+                    f"{self.settings.kalshi_event_resolution_timeout_seconds:g} "
+                    "seconds: "
+                    + ", ".join(unresolved[:10])
+                    + detail
+                ) from last_error
+
+            time.sleep(min(delay, remaining))
+            delay = min(delay * 2, EVENT_RETRY_MAX_DELAY_SECONDS)
+
     def fetch_new_markets(
         self, window_start: datetime, window_end: datetime
     ) -> MarketFetchResult:
@@ -145,23 +197,7 @@ class KalshiClient:
         event_tickers = sorted(
             {str(row["event_ticker"]) for row in market_rows if row.get("event_ticker")}
         )
-        events: dict[str, dict[str, Any]] = {}
-        for offset in range(0, len(event_tickers), 50):
-            chunk = event_tickers[offset : offset + 50]
-            rows = self._paginate(
-                "/events",
-                "events",
-                {"limit": 200, "tickers": ",".join(chunk)},
-            )
-            for row in rows:
-                if row.get("event_ticker"):
-                    events[str(row["event_ticker"])] = row
-        missing_events = set(event_tickers) - set(events)
-        if missing_events:
-            raise RuntimeError(
-                "Kalshi events could not be resolved: "
-                + ", ".join(sorted(missing_events)[:10])
-            )
+        events = self._fetch_events(event_tickers)
 
         series_payload = self._get("/series")
         series_rows = series_payload.get("series")

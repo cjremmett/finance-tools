@@ -50,6 +50,7 @@ def _settings(database_url: str) -> Settings:
         http_timeout_seconds=20,
         discord_batch_delay_seconds=0,
         kalshi_requests_per_second=10,
+        kalshi_event_resolution_timeout_seconds=600,
     )
 
 
@@ -134,14 +135,20 @@ def test_database_seeds_then_replaces_only_latest_window(tmp_path: Path) -> None
         subtitle="Before August",
         category="Science and Technology",
     )
+    changed_client = FakeClient([aliens])
     changed = poll_and_stage(
         _request("run-2", "2026-07-27T10:00:00Z"),
         database_url=database_url,
         settings=settings,
-        client=FakeClient([aliens]),
+        client=changed_client,
     )
     assert changed.new_market_count == 1
     assert "Before August" in changed.notification_batches[0]
+    changed_start, changed_end = changed_client.windows[0]
+    assert changed_start.replace(tzinfo=timezone.utc) == datetime(
+        2026, 7, 26, 10, tzinfo=timezone.utc
+    )
+    assert changed_end == datetime(2026, 7, 27, 10, tzinfo=timezone.utc)
     mark_batch_sent(
         MarkBatchRequest(
             workflow_run_id=changed.staged_workflow_run_id,
@@ -150,14 +157,20 @@ def test_database_seeds_then_replaces_only_latest_window(tmp_path: Path) -> None
         database_url,
     )
 
+    unchanged_client = FakeClient([])
     unchanged = poll_and_stage(
         _request("run-3", "2026-07-28T10:00:00Z"),
         database_url=database_url,
         settings=settings,
-        client=FakeClient([]),
+        client=unchanged_client,
     )
     assert unchanged.new_market_count == 0
     assert "No new markets" in unchanged.notification_batches[0]
+    unchanged_start, unchanged_end = unchanged_client.windows[0]
+    assert unchanged_start.replace(tzinfo=timezone.utc) == datetime(
+        2026, 7, 27, 10, tzinfo=timezone.utc
+    )
+    assert unchanged_end == datetime(2026, 7, 28, 10, tzinfo=timezone.utc)
     with Session(engine) as session:
         assert session.scalars(select(LatestMarket)).all() == []
         state = session.get(MonitorState, 1)
@@ -269,15 +282,20 @@ def test_failure_message_is_sanitized_and_bounded() -> None:
     assert len(message) <= DISCORD_CONTENT_LIMIT
 
 
-def test_kalshi_client_uses_creation_window_and_series_category() -> None:
+def test_kalshi_client_retries_event_resolution_without_refetching_markets(
+    monkeypatch,
+) -> None:
     settings = _settings("sqlite://")
     client = object.__new__(KalshiClient)
     client.settings = settings
     calls: list[tuple[str, dict[str, Any]]] = []
+    event_attempts = 0
+    sleep_delays: list[float] = []
 
     def paginate(
         path: str, item_key: str, params: dict[str, Any]
     ) -> list[dict[str, Any]]:
+        nonlocal event_attempts
         calls.append((path, params))
         if path == "/markets":
             return [
@@ -297,6 +315,9 @@ def test_kalshi_client_uses_creation_window_and_series_category() -> None:
                 },
             ]
         assert item_key == "events"
+        event_attempts += 1
+        if event_attempts <= 3:
+            return []
         return [
             {
                 "event_ticker": "KXALIENS-27",
@@ -323,6 +344,9 @@ def test_kalshi_client_uses_creation_window_and_series_category() -> None:
             }
         raise AssertionError(path)
 
+    monkeypatch.setattr(
+        "kalshi_markets.kalshi.time.sleep", sleep_delays.append
+    )
     client._paginate = paginate
     client._get = get
     result = client.fetch_new_markets(
@@ -334,6 +358,9 @@ def test_kalshi_client_uses_creation_window_and_series_category() -> None:
     assert result.categories == ["Economics", "Science and Technology"]
     assert calls[0][0] == "/markets"
     assert calls[0][1]["mve_filter"] == "exclude"
+    assert sum(path == "/markets" for path, _ in calls) == 1
+    assert sum(path == "/events" for path, _ in calls) == 4
+    assert sleep_delays == [5.0, 10.0, 20.0]
 
 
 def test_kalshi_workflow_passes_temporal_sandbox_validation() -> None:
