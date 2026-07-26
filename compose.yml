@@ -1,0 +1,46 @@
+services:
+  postgresql:
+    image: postgres:18.4
+    restart: unless-stopped
+    ports:
+      - "11001:5432"
+    environment:
+      POSTGRES_DB: finance_tools
+      POSTGRES_USER: finance-tools
+      POSTGRES_PASSWORD: finance-tools
+    volumes:
+      - interest_rate_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U finance-tools -d finance_tools"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    build: .
+    restart: "no"
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://finance-tools:finance-tools@postgresql:5432/finance_tools
+    command: ["alembic", "upgrade", "head"]
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-host.docker.internal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-interest-rates}
+      DATABASE_URL: postgresql+psycopg://finance-tools:finance-tools@postgresql:5432/finance_tools
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:?Set DISCORD_WEBHOOK_URL in .env}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-20}
+
+volumes:
+  interest_rate_postgres_data:
