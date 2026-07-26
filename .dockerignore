@@ -8,3 +8,4 @@ __pycache__
 .coverage
 htmlcov
 tests
+kalshi_markets/kalshi-api-key*.txt

@@ -43,5 +43,26 @@ services:
       FRED_API_KEY: ${FRED_API_KEY:?Set FRED_API_KEY in .env}
       HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-20}
 
+  kalshi-market-worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-host.docker.internal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      KALSHI_TEMPORAL_TASK_QUEUE: ${KALSHI_TEMPORAL_TASK_QUEUE:-kalshi-markets}
+      DATABASE_URL: postgresql+psycopg://finance-tools:finance-tools@postgresql:5432/finance_tools
+      KALSHI_API_KEY_ID: ${KALSHI_API_KEY_ID:?Set KALSHI_API_KEY_ID in .env}
+      KALSHI_PRIVATE_KEY_BASE64: ${KALSHI_PRIVATE_KEY_BASE64:?Set KALSHI_PRIVATE_KEY_BASE64 in .env}
+      KALSHI_CATEGORY_WHITELIST: ${KALSHI_CATEGORY_WHITELIST:?Set KALSHI_CATEGORY_WHITELIST in .env}
+      KALSHI_DISCORD_WEBHOOK_URL: ${KALSHI_DISCORD_WEBHOOK_URL:?Set KALSHI_DISCORD_WEBHOOK_URL in .env}
+      KALSHI_DISCORD_BATCH_DELAY_SECONDS: ${KALSHI_DISCORD_BATCH_DELAY_SECONDS:-1}
+      KALSHI_REQUESTS_PER_SECOND: ${KALSHI_REQUESTS_PER_SECOND:-10}
+      HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-20}
+
 volumes:
   interest_rate_postgres_data:

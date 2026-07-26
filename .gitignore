@@ -15,3 +15,6 @@ wheels/
 .coverage
 htmlcov/
 .uv-cache/
+
+# Local Kalshi API credentials
+kalshi_markets/kalshi-api-key*.txt

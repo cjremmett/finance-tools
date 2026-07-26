@@ -3,6 +3,7 @@ FROM python:3.12-slim AS builder
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY interest_rates_scraper ./interest_rates_scraper
+COPY kalshi_markets ./kalshi_markets
 RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 
 FROM python:3.12-slim

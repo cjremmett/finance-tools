@@ -7,6 +7,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from interest_rates_scraper.database import Base
+from kalshi_markets.database import Base as KalshiBase
 
 config = context.config
 if config.config_file_name is not None:
@@ -16,7 +17,7 @@ config.set_main_option(
     "sqlalchemy.url",
     os.getenv("DATABASE_URL", config.get_main_option("sqlalchemy.url")),
 )
-target_metadata = Base.metadata
+target_metadata = [Base.metadata, KalshiBase.metadata]
 
 
 def run_migrations_offline() -> None:
