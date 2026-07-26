@@ -88,3 +88,62 @@ def test_persistence_is_idempotent_by_workflow_run_id(tmp_path: Path) -> None:
     assert repeated == first
     with Session(get_engine(database_url)) as session:
         assert len(session.scalars(select(RateObservationRow)).all()) == 1
+
+
+def test_snapshot_comparison_is_isolated_by_source(tmp_path: Path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'source-isolation.db'}"
+    get_engine.cache_clear()
+    engine = get_engine(database_url)
+    Base.metadata.create_all(engine)
+
+    def observation(source: str, key: str, rate: str) -> RateObservation:
+        return RateObservation(
+            source=source,
+            product_key=key,
+            product_name=key,
+            product_type="apy",
+            rate_percent=rate,
+            source_url=f"https://example.test/{source}",
+        )
+
+    def request(run_id: str, fed_rate: str) -> PersistRequest:
+        return PersistRequest(
+            workflow_id="workflow",
+            workflow_run_id=run_id,
+            observed_at=f"2026-07-2{run_id[-1]}T12:00:00+00:00",
+            results=[
+                ScrapeResult(
+                    source="federal_reserve",
+                    observations=[
+                        observation(
+                            "federal_reserve", "fed_funds_target_lower", fed_rate
+                        )
+                    ],
+                ),
+                ScrapeResult(
+                    source="kalshi",
+                    observations=[observation("kalshi", "kalshi_apy", "3.25")],
+                ),
+                ScrapeResult(
+                    source="marcus_savings",
+                    observations=[
+                        observation(
+                            "marcus_savings", "marcus_online_savings", "3.40"
+                        )
+                    ],
+                ),
+            ],
+            failures=[],
+        )
+
+    persist_scrape(request("run1", "3.50"), database_url)
+    unchanged = persist_scrape(request("run2", "3.50"), database_url)
+    changed = persist_scrape(request("run3", "3.75"), database_url)
+
+    assert unchanged.changes == []
+    assert [
+        (change.source, change.product_key, change.change_type)
+        for change in changed.changes
+    ] == [
+        ("federal_reserve", "fed_funds_target_lower", "changed")
+    ]

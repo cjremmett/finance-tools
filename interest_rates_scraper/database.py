@@ -181,7 +181,10 @@ def _previous_snapshot(
     rows = session.execute(
         select(Product, RateObservationRow.rate_percent)
         .join(RateObservationRow, RateObservationRow.product_id == Product.id)
-        .where(RateObservationRow.workflow_run_id == previous_run_id)
+        .where(
+            RateObservationRow.workflow_run_id == previous_run_id,
+            Product.source == source,
+        )
     ).all()
     return {product.product_key: (product, rate) for product, rate in rows}
 
