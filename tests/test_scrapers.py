@@ -67,6 +67,7 @@ def test_marcus_cd_parser_normalizes_terms_and_types() -> None:
     assert {
         item.product_type for item in result.observations
     } == {"High-Yield CD", "No-Penalty CD", "Rate Bump CD"}
+    assert [item.term_months for item in result.observations] == [6, 11, 20, 24]
 
 
 def test_marcus_cd_parser_rejects_empty_or_partial_page() -> None:

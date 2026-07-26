@@ -130,7 +130,15 @@ def parse_marcus_cds(html: str) -> ScrapeResult:
     return ScrapeResult(
         source="marcus_cds",
         source_effective_date=effective_date,
-        observations=list(observations.values()),
+        observations=sorted(
+            observations.values(),
+            key=lambda observation: (
+                observation.term_months
+                if observation.term_months is not None
+                else 10**9,
+                observation.product_name,
+            ),
+        ),
     )
 
 
