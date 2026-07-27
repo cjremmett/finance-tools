@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import math
 import time
 from datetime import datetime, timezone
@@ -17,11 +18,49 @@ from kalshi_markets.models import MarketFetchResult, NewMarket
 BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 EVENT_RETRY_INITIAL_DELAY_SECONDS = 5.0
 EVENT_RETRY_MAX_DELAY_SECONDS = 60.0
+SECONDS_PER_DAY = 24 * 60 * 60
+LOGGER = logging.getLogger(__name__)
 
 
 def _parse_datetime(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _meets_minimum_duration(
+    row: dict[str, Any], minimum_duration_days: float
+) -> bool:
+    if minimum_duration_days <= 0:
+        return True
+
+    ticker = str(row.get("ticker") or "<unknown>")
+    open_time = row.get("open_time")
+    close_time = row.get("close_time")
+    if not open_time or not close_time:
+        LOGGER.warning(
+            "Keeping Kalshi market %s because open_time or close_time is missing",
+            ticker,
+        )
+        return True
+
+    try:
+        opens_at = _parse_datetime(str(open_time))
+        closes_at = _parse_datetime(str(close_time))
+    except (TypeError, ValueError):
+        LOGGER.warning(
+            "Keeping Kalshi market %s because its duration timestamps are invalid",
+            ticker,
+        )
+        return True
+
+    duration_seconds = (closes_at - opens_at).total_seconds()
+    if duration_seconds < 0:
+        LOGGER.warning(
+            "Keeping Kalshi market %s because close_time precedes open_time",
+            ticker,
+        )
+        return True
+    return duration_seconds >= minimum_duration_days * SECONDS_PER_DAY
 
 
 class KalshiClient:
@@ -191,6 +230,13 @@ class KalshiClient:
         ]
 
         categories = self.fetch_categories()
+        market_rows = [
+            row
+            for row in market_rows
+            if _meets_minimum_duration(
+                row, self.settings.minimum_market_duration_days
+            )
+        ]
         if not market_rows:
             return MarketFetchResult(markets=[], categories=categories)
 

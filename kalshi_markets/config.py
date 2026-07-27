@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 
@@ -25,6 +26,7 @@ class Settings:
     discord_batch_delay_seconds: float
     kalshi_requests_per_second: float
     kalshi_event_resolution_timeout_seconds: float
+    minimum_market_duration_days: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -42,6 +44,15 @@ class Settings:
         event_resolution_timeout = float(
             os.getenv("KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS", "600")
         )
+        minimum_duration_raw = os.getenv(
+            "KALSHI_MIN_MARKET_DURATION_DAYS", "0"
+        )
+        try:
+            minimum_duration_days = float(minimum_duration_raw)
+        except ValueError as error:
+            raise RuntimeError(
+                "KALSHI_MIN_MARKET_DURATION_DAYS must be a non-negative number"
+            ) from error
         if batch_delay < 0:
             raise RuntimeError(
                 "KALSHI_DISCORD_BATCH_DELAY_SECONDS must be non-negative"
@@ -51,6 +62,10 @@ class Settings:
         if event_resolution_timeout <= 0:
             raise RuntimeError(
                 "KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS must be positive"
+            )
+        if not math.isfinite(minimum_duration_days) or minimum_duration_days < 0:
+            raise RuntimeError(
+                "KALSHI_MIN_MARKET_DURATION_DAYS must be a non-negative number"
             )
         return cls(
             temporal_address=os.getenv("TEMPORAL_ADDRESS", "localhost:7233"),
@@ -70,4 +85,5 @@ class Settings:
             discord_batch_delay_seconds=batch_delay,
             kalshi_requests_per_second=requests_per_second,
             kalshi_event_resolution_timeout_seconds=event_resolution_timeout,
+            minimum_market_duration_days=minimum_duration_days,
         )

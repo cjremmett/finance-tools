@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from temporalio import workflow
@@ -27,7 +29,7 @@ from kalshi_markets.discord import (
     build_market_messages,
     build_new_category_messages,
 )
-from kalshi_markets.kalshi import KalshiClient
+from kalshi_markets.kalshi import KalshiClient, _meets_minimum_duration
 from kalshi_markets.models import (
     MarkBatchRequest,
     MarketFetchResult,
@@ -51,6 +53,7 @@ def _settings(database_url: str) -> Settings:
         discord_batch_delay_seconds=0,
         kalshi_requests_per_second=10,
         kalshi_event_resolution_timeout_seconds=600,
+        minimum_market_duration_days=0,
     )
 
 
@@ -361,6 +364,95 @@ def test_kalshi_client_retries_event_resolution_without_refetching_markets(
     assert sum(path == "/markets" for path, _ in calls) == 1
     assert sum(path == "/events" for path, _ in calls) == 4
     assert sleep_delays == [5.0, 10.0, 20.0]
+
+
+def test_minimum_market_duration_boundaries_and_invalid_data() -> None:
+    base = {
+        "ticker": "DURATION",
+        "open_time": "2026-07-26T12:00:00Z",
+    }
+    assert not _meets_minimum_duration(
+        {**base, "close_time": "2026-07-27T11:59:59Z"}, 1
+    )
+    assert _meets_minimum_duration(
+        {**base, "close_time": "2026-07-27T12:00:00Z"}, 1
+    )
+    assert _meets_minimum_duration(
+        {**base, "close_time": "2026-07-27T00:00:00Z"}, 0.5
+    )
+    assert _meets_minimum_duration({"ticker": "MISSING"}, 1)
+    assert _meets_minimum_duration(
+        {**base, "close_time": "not-a-timestamp"}, 1
+    )
+    assert _meets_minimum_duration(
+        {**base, "close_time": "2026-07-26T11:59:59Z"}, 1
+    )
+
+
+def test_minimum_market_duration_configuration(monkeypatch) -> None:
+    required_environment = {
+        "KALSHI_CATEGORY_WHITELIST": "Economics",
+        "KALSHI_DISCORD_WEBHOOK_URL": "https://discord.test/webhook",
+        "KALSHI_API_KEY_ID": "key-id",
+        "KALSHI_PRIVATE_KEY_BASE64": "key",
+    }
+    for name, value in required_environment.items():
+        monkeypatch.setenv(name, value)
+
+    monkeypatch.setenv("KALSHI_MIN_MARKET_DURATION_DAYS", "1.5")
+    assert Settings.from_env().minimum_market_duration_days == 1.5
+
+    for invalid_value in ("-1", "nan", "not-a-number"):
+        monkeypatch.setenv(
+            "KALSHI_MIN_MARKET_DURATION_DAYS", invalid_value
+        )
+        with pytest.raises(
+            RuntimeError,
+            match="KALSHI_MIN_MARKET_DURATION_DAYS must be a non-negative number",
+        ):
+            Settings.from_env()
+
+
+def test_duration_filter_avoids_event_and_series_requests() -> None:
+    settings = replace(_settings("sqlite://"), minimum_market_duration_days=2)
+    client = object.__new__(KalshiClient)
+    client.settings = settings
+    calls: list[str] = []
+
+    def paginate(
+        path: str, item_key: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        calls.append(path)
+        assert path == "/markets"
+        return [
+            {
+                "ticker": "SHORT",
+                "event_ticker": "SHORT-EVENT",
+                "created_time": "2026-07-26T12:00:00Z",
+                "open_time": "2026-07-26T12:00:00Z",
+                "close_time": "2026-07-27T12:00:00Z",
+            }
+        ]
+
+    def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append(path)
+        assert path == "/search/tags_by_categories"
+        return {
+            "tags_by_categories": {
+                "Economics": [],
+                "Science and Technology": [],
+            }
+        }
+
+    client._paginate = paginate
+    client._get = get
+    result = client.fetch_new_markets(
+        datetime(2026, 7, 26, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 26, 13, tzinfo=timezone.utc),
+    )
+
+    assert result.markets == []
+    assert calls == ["/markets", "/search/tags_by_categories"]
 
 
 def test_kalshi_workflow_passes_temporal_sandbox_validation() -> None:

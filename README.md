@@ -105,6 +105,7 @@ KALSHI_PRIVATE_KEY_BASE64=base64-encoded-private-key-pem
 KALSHI_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 KALSHI_CATEGORY_WHITELIST=Economics,Elections,Financials,Politics,Science and Technology
 KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS=600
+KALSHI_MIN_MARKET_DURATION_DAYS=0
 ```
 
 The first run establishes a cutoff without backfilling old markets. Later runs
@@ -116,6 +117,15 @@ the worker stores it and sends a separate category-release message; the new
 category remains excluded from market alerts until it is explicitly added to
 `KALSHI_CATEGORY_WHITELIST`. Exhausted polling retries send a failure message
 and leave the cutoff unchanged.
+
+`KALSHI_MIN_MARKET_DURATION_DAYS` filters markets whose scheduled trading
+window (`open_time` through `close_time`) is shorter than the configured number
+of 24-hour days. The default `0` disables the filter, decimal values are
+supported, and a market exactly equal to the threshold is retained. Markets
+with missing or invalid duration timestamps are retained and logged so
+incomplete Kalshi metadata does not silently suppress an alert. Kalshi may
+move `close_time` earlier after creation, so this filter applies only to the
+schedule reported when the market is first discovered.
 
 The polling window's upper bound is captured when the workflow starts. If
 Kalshi returns a new market before its event metadata becomes visible, the
