@@ -194,13 +194,14 @@ class KalshiClient:
                     if last_error is not None
                     else ""
                 )
-                raise RuntimeError(
+                LOGGER.warning(
                     "Kalshi events could not be resolved after "
                     f"{self.settings.kalshi_event_resolution_timeout_seconds:g} "
-                    "seconds: "
+                    "seconds; ignoring their markets: "
                     + ", ".join(unresolved[:10])
                     + detail
-                ) from last_error
+                )
+                return events
 
             time.sleep(min(delay, remaining))
             delay = min(delay * 2, EVENT_RETRY_MAX_DELAY_SECONDS)
@@ -258,7 +259,10 @@ class KalshiClient:
         results: list[NewMarket] = []
         for row in market_rows:
             event_ticker = str(row["event_ticker"])
-            series_ticker = events[event_ticker].get("series_ticker")
+            event = events.get(event_ticker)
+            if event is None:
+                continue
+            series_ticker = event.get("series_ticker")
             if not series_ticker or series_ticker not in series_categories:
                 raise RuntimeError(
                     f"Kalshi series could not be resolved for {event_ticker}"

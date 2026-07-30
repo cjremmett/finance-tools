@@ -42,7 +42,7 @@ class Settings:
         batch_delay = float(os.getenv("KALSHI_DISCORD_BATCH_DELAY_SECONDS", "1"))
         requests_per_second = float(os.getenv("KALSHI_REQUESTS_PER_SECOND", "10"))
         event_resolution_timeout = float(
-            os.getenv("KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS", "600")
+            os.getenv("KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS", "60")
         )
         minimum_duration_raw = os.getenv(
             "KALSHI_MIN_MARKET_DURATION_DAYS", "0"

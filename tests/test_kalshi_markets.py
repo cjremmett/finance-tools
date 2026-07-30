@@ -52,7 +52,7 @@ def _settings(database_url: str) -> Settings:
         http_timeout_seconds=20,
         discord_batch_delay_seconds=0,
         kalshi_requests_per_second=10,
-        kalshi_event_resolution_timeout_seconds=600,
+        kalshi_event_resolution_timeout_seconds=60,
         minimum_market_duration_days=0,
     )
 
@@ -366,6 +366,73 @@ def test_kalshi_client_retries_event_resolution_without_refetching_markets(
     assert sleep_delays == [5.0, 10.0, 20.0]
 
 
+def test_kalshi_client_ignores_markets_with_events_unresolved_at_timeout(
+    monkeypatch, caplog
+) -> None:
+    settings = _settings("sqlite://")
+    client = object.__new__(KalshiClient)
+    client.settings = settings
+
+    def paginate(
+        path: str, item_key: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        if path == "/markets":
+            return [
+                {
+                    "ticker": "RESOLVED-MARKET",
+                    "event_ticker": "RESOLVED-EVENT",
+                    "created_time": "2026-07-26T12:00:00Z",
+                },
+                {
+                    "ticker": "UNRESOLVED-MARKET",
+                    "event_ticker": "UNRESOLVED-EVENT",
+                    "created_time": "2026-07-26T12:00:01Z",
+                },
+            ]
+        assert path == "/events"
+        return [
+            {
+                "event_ticker": "RESOLVED-EVENT",
+                "series_ticker": "RESOLVED-SERIES",
+            }
+        ]
+
+    def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if path == "/search/tags_by_categories":
+            return {
+                "tags_by_categories": {
+                    "Economics": [],
+                    "Science and Technology": [],
+                }
+            }
+        if path == "/series":
+            return {
+                "series": [
+                    {
+                        "ticker": "RESOLVED-SERIES",
+                        "category": "Economics",
+                    }
+                ]
+            }
+        raise AssertionError(path)
+
+    monotonic_values = iter((0.0, 60.0))
+    monkeypatch.setattr(
+        "kalshi_markets.kalshi.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+    client._paginate = paginate
+    client._get = get
+
+    result = client.fetch_new_markets(
+        datetime(2026, 7, 26, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 26, 13, tzinfo=timezone.utc),
+    )
+
+    assert [market.ticker for market in result.markets] == ["RESOLVED-MARKET"]
+    assert "ignoring their markets: UNRESOLVED-EVENT" in caplog.text
+
+
 def test_minimum_market_duration_boundaries_and_invalid_data() -> None:
     base = {
         "ticker": "DURATION",
@@ -398,6 +465,9 @@ def test_minimum_market_duration_configuration(monkeypatch) -> None:
     }
     for name, value in required_environment.items():
         monkeypatch.setenv(name, value)
+
+    monkeypatch.delenv("KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS", raising=False)
+    assert Settings.from_env().kalshi_event_resolution_timeout_seconds == 60
 
     monkeypatch.setenv("KALSHI_MIN_MARKET_DURATION_DAYS", "1.5")
     assert Settings.from_env().minimum_market_duration_days == 1.5

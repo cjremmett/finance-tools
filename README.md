@@ -104,7 +104,7 @@ KALSHI_API_KEY_ID=your-read-only-key-id
 KALSHI_PRIVATE_KEY_BASE64=base64-encoded-private-key-pem
 KALSHI_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 KALSHI_CATEGORY_WHITELIST=Economics,Elections,Financials,Politics,Science and Technology
-KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS=600
+KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS=60
 KALSHI_MIN_MARKET_DURATION_DAYS=0
 ```
 
@@ -131,7 +131,9 @@ The polling window's upper bound is captured when the workflow starts. If
 Kalshi returns a new market before its event metadata becomes visible, the
 worker retains that market response and retries only the unresolved events
 with exponential backoff for up to
-`KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS` (ten minutes by default). A
+`KALSHI_EVENT_RESOLUTION_TIMEOUT_SECONDS` (one minute by default). Markets
+whose events remain unresolved are ignored, while markets with resolved events
+continue through category filtering and notification. A
 successful run saves the original upper bound as its next cutoff, so markets
 created while event resolution is waiting are included in the following run.
 
