@@ -11,11 +11,14 @@ DISCORD_CONTENT_LIMIT = 2000
 MESSAGE_HEADING = "🆕 **New Kalshi markets**"
 
 
-def _market_line(market: NewMarket) -> str:
-    suffix = ""
-    if market.subtitle and market.subtitle.casefold() not in market.title.casefold():
-        suffix = f" — {market.subtitle}"
+def _event_title(markets: list[NewMarket], *, continued: bool = False) -> str:
+    market = min(markets, key=lambda item: (item.title.casefold(), item.ticker))
+    suffix = " *(continued)*" if continued else ""
     return f"• **{market.title}**{suffix}"
+
+
+def _variant_line(market: NewMarket) -> str:
+    return f"-# • {market.subtitle or market.ticker}"
 
 
 def _fit_line(line: str, available: int) -> str:
@@ -26,6 +29,28 @@ def _fit_line(line: str, available: int) -> str:
     return f"{line[: available - 1]}…"
 
 
+def _fits(lines: list[str], additions: list[str]) -> bool:
+    return len("\n".join([*lines, *additions])) <= DISCORD_CONTENT_LIMIT
+
+
+def _start_event(
+    lines: list[str],
+    event_markets: list[NewMarket],
+    first_variant: str,
+    *,
+    continued: bool,
+) -> None:
+    raw_title = _event_title(event_markets, continued=continued)
+    reserved_for_variant = min(len(first_variant), 1)
+    available = (
+        DISCORD_CONTENT_LIMIT
+        - len("\n".join(lines))
+        - 2
+        - reserved_for_variant
+    )
+    lines.append(_fit_line(raw_title, available))
+
+
 def build_market_messages(markets: list[NewMarket]) -> list[str]:
     if not markets:
         return [
@@ -33,37 +58,81 @@ def build_market_messages(markets: list[NewMarket]) -> list[str]:
             "No new markets were detected in the configured categories."
         ]
 
-    grouped: dict[str, list[NewMarket]] = {}
+    grouped: dict[str, dict[str, list[NewMarket]]] = {}
     for market in markets:
-        grouped.setdefault(market.category, []).append(market)
+        grouped.setdefault(market.category, {}).setdefault(
+            market.event_ticker, []
+        ).append(market)
 
     messages: list[str] = []
     lines = [MESSAGE_HEADING]
-    has_market_line = False
+    has_event = False
     for category in sorted(grouped):
         category_header = f"\n**{category}**"
         category_started = False
-        for market in sorted(
-            grouped[category], key=lambda item: (item.title, item.ticker)
-        ):
-            raw_line = _market_line(market)
-            candidate = lines + (
-                [] if category_started else [category_header]
-            ) + [raw_line]
-            if (
-                len("\n".join(candidate)) > DISCORD_CONTENT_LIMIT
-                and has_market_line
-            ):
+        events = sorted(
+            grouped[category].values(),
+            key=lambda items: (
+                min(items, key=lambda item: (item.title.casefold(), item.ticker))
+                .title.casefold(),
+                items[0].event_ticker,
+            ),
+        )
+        for event_markets in events:
+            event_markets = sorted(
+                event_markets,
+                key=lambda item: (
+                    (item.subtitle or item.ticker).casefold(),
+                    item.ticker,
+                ),
+            )
+            event_lines = [
+                _event_title(event_markets),
+                *[_variant_line(market) for market in event_markets],
+            ]
+            prefix = [] if category_started else [category_header]
+            if _fits(lines, [*prefix, *event_lines]):
+                lines.extend([*prefix, *event_lines])
+                category_started = True
+                has_event = True
+                continue
+
+            if has_event:
                 messages.append("\n".join(lines))
                 lines = [MESSAGE_HEADING, category_header]
                 category_started = True
-                has_market_line = False
+                has_event = False
             elif not category_started:
                 lines.append(category_header)
                 category_started = True
-            available = DISCORD_CONTENT_LIMIT - len("\n".join(lines)) - 1
-            lines.append(_fit_line(raw_line, available))
-            has_market_line = True
+
+            if _fits(lines, event_lines):
+                lines.extend(event_lines)
+                has_event = True
+                continue
+
+            variant_lines = event_lines[1:]
+            _start_event(
+                lines,
+                event_markets,
+                variant_lines[0],
+                continued=False,
+            )
+            variant_started = False
+            for variant_line in variant_lines:
+                if not _fits(lines, [variant_line]) and variant_started:
+                    messages.append("\n".join(lines))
+                    lines = [MESSAGE_HEADING, category_header]
+                    _start_event(
+                        lines,
+                        event_markets,
+                        variant_line,
+                        continued=True,
+                    )
+                available = DISCORD_CONTENT_LIMIT - len("\n".join(lines)) - 1
+                lines.append(_fit_line(variant_line, available))
+                variant_started = True
+            has_event = True
     messages.append("\n".join(lines))
     return messages
 

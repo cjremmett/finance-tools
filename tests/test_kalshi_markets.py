@@ -60,6 +60,7 @@ def _settings(database_url: str) -> Settings:
 def _market(
     ticker: str,
     *,
+    event_ticker: str = "EVENT-1",
     title: str = "Will something happen?",
     subtitle: str | None = None,
     category: str = "Economics",
@@ -67,7 +68,7 @@ def _market(
 ) -> NewMarket:
     return NewMarket(
         ticker=ticker,
-        event_ticker="EVENT-1",
+        event_ticker=event_ticker,
         series_ticker="SERIES-1",
         title=title,
         subtitle=subtitle,
@@ -210,6 +211,7 @@ def test_market_messages_batch_and_group_categories() -> None:
     markets = [
         _market(
             f"ECON-{index}",
+            event_ticker=f"EVENT-{index}",
             title=f"Economic market {index} " + ("x" * 120),
         )
         for index in range(30)
@@ -237,6 +239,62 @@ def test_market_messages_batch_and_group_categories() -> None:
     assert len(oversized) == 1
     assert len(oversized[0]) <= DISCORD_CONTENT_LIMIT
     assert "…" in oversized[0]
+
+
+def test_market_messages_group_variants_by_event() -> None:
+    markets = [
+        _market(
+            "RATE-525",
+            event_ticker="FED-RATE",
+            title="What will the Fed target rate be?",
+            subtitle="Above 5.25%",
+        ),
+        _market(
+            "RATE-500",
+            event_ticker="FED-RATE",
+            title="What will the Fed target rate be?",
+            subtitle="Above 5.00%",
+        ),
+        _market(
+            "RATE-OTHER",
+            event_ticker="OTHER-RATE",
+            title="What will the Fed target rate be?",
+            subtitle=None,
+        ),
+    ]
+
+    message = "\n".join(build_market_messages(markets))
+
+    assert message.count("• **What will the Fed target rate be?**") == 2
+    assert "-# • Above 5.00%" in message
+    assert "-# • Above 5.25%" in message
+    assert "-# • RATE-OTHER" in message
+    assert message.index("Above 5.00%") < message.index("Above 5.25%")
+
+
+def test_large_event_uses_labeled_continuation_batches() -> None:
+    title = "Which price will this asset reach?"
+    markets = [
+        _market(
+            f"PRICE-{index:03}",
+            event_ticker="ASSET-PRICE",
+            title=title,
+            subtitle=f"Above ${index}," + ("x" * 70),
+        )
+        for index in range(60)
+    ]
+
+    messages = build_market_messages(markets)
+    combined = "\n".join(messages)
+
+    assert len(messages) > 1
+    assert all(len(message) <= DISCORD_CONTENT_LIMIT for message in messages)
+    assert messages[0].count(f"• **{title}**") == 1
+    assert all(
+        f"• **{title}** *(continued)*" in message
+        for message in messages[1:]
+    )
+    assert combined.count("-# • Above $") == len(markets)
 
 
 def test_new_category_is_stored_and_sent_as_a_separate_message(
