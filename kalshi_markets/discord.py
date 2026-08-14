@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 
 import requests
 
@@ -9,6 +10,11 @@ from kalshi_markets.models import NewMarket
 
 DISCORD_CONTENT_LIMIT = 2000
 MESSAGE_HEADING = "🆕 **New Kalshi markets**"
+
+
+def _message_heading(now: datetime | None = None) -> str:
+    timestamp = now or datetime.now(timezone.utc)
+    return f"{MESSAGE_HEADING} — <t:{int(timestamp.timestamp())}:F>"
 
 
 def _event_title(markets: list[NewMarket], *, continued: bool = False) -> str:
@@ -51,7 +57,9 @@ def _start_event(
     lines.append(_fit_line(raw_title, available))
 
 
-def build_market_messages(markets: list[NewMarket]) -> list[str]:
+def build_market_messages(
+    markets: list[NewMarket], *, now: datetime | None = None
+) -> list[str]:
     if not markets:
         return [
             "✅ **Kalshi market monitor completed**\n"
@@ -64,8 +72,9 @@ def build_market_messages(markets: list[NewMarket]) -> list[str]:
             market.event_ticker, []
         ).append(market)
 
+    heading = _message_heading(now)
     messages: list[str] = []
-    lines = [MESSAGE_HEADING]
+    lines = [heading]
     has_event = False
     for category in sorted(grouped):
         category_header = f"\n**{category}**"
@@ -99,7 +108,7 @@ def build_market_messages(markets: list[NewMarket]) -> list[str]:
 
             if has_event:
                 messages.append("\n".join(lines))
-                lines = [MESSAGE_HEADING, category_header]
+                lines = [heading, category_header]
                 category_started = True
                 has_event = False
             elif not category_started:
@@ -122,7 +131,7 @@ def build_market_messages(markets: list[NewMarket]) -> list[str]:
             for variant_line in variant_lines:
                 if not _fits(lines, [variant_line]) and variant_started:
                     messages.append("\n".join(lines))
-                    lines = [MESSAGE_HEADING, category_header]
+                    lines = [heading, category_header]
                     _start_event(
                         lines,
                         event_markets,

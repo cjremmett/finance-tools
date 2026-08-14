@@ -241,6 +241,17 @@ def test_market_messages_batch_and_group_categories() -> None:
     assert "…" in oversized[0]
 
 
+def test_market_messages_include_discord_timestamp_in_heading() -> None:
+    now = datetime(2026, 8, 14, 16, 30, tzinfo=timezone.utc)
+
+    messages = build_market_messages([_market("NEW")], now=now)
+
+    expected_heading = (
+        f"🆕 **New Kalshi markets** — <t:{int(now.timestamp())}:F>"
+    )
+    assert messages[0].splitlines()[0] == expected_heading
+
+
 def test_market_messages_group_variants_by_event() -> None:
     markets = [
         _market(
