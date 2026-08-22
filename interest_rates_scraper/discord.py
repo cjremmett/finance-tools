@@ -12,13 +12,15 @@ SOURCE_ORDER = {
     "federal_reserve": 0,
     "marcus_savings": 1,
     "marcus_cds": 2,
-    "kalshi": 3,
+    "x_money": 3,
+    "kalshi": 4,
 }
 
 SOURCE_LABELS = {
     "federal_reserve": "Federal Reserve",
     "marcus_savings": "Marcus Savings",
     "marcus_cds": "Marcus CDs",
+    "x_money": "X Money",
     "kalshi": "Kalshi",
 }
 

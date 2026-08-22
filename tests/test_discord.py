@@ -52,6 +52,22 @@ def test_discord_message_formats_and_orders_changes() -> None:
                     old_rate_percent=None,
                     new_rate_percent="3.95",
                 ),
+                RateChange(
+                    source="x_money",
+                    product_key="x_money_premium_plus_apy",
+                    product_name="X Money Premium+ APY",
+                    change_type="changed",
+                    old_rate_percent="6",
+                    new_rate_percent="5.75",
+                ),
+                RateChange(
+                    source="x_money",
+                    product_key="x_money_boosted_apy",
+                    product_name="X Money Boosted APY",
+                    change_type="changed",
+                    old_rate_percent="6",
+                    new_rate_percent="5.5",
+                ),
             ],
             failures=[SourceFailure(source="kalshi", error="parser changed")],
         )
@@ -63,7 +79,11 @@ def test_discord_message_formats_and_orders_changes() -> None:
     assert "Marcus Cds" not in message
     assert message.index("**Federal Reserve**") < message.index("**Marcus Savings**")
     assert message.index("**Marcus Savings**") < message.index("**Marcus CDs**")
-    assert message.index("**Marcus CDs**") < message.index("**Kalshi**")
+    assert message.index("**Marcus CDs**") < message.index("**X Money**")
+    assert message.index("**X Money**") < message.index("**Kalshi**")
     assert message.index("Marcus 6-Month") < message.index("Marcus 24-Month")
+    assert message.index("X Money Boosted APY") < message.index("X Money Premium+ APY")
+    assert "6.00% → 5.50%" in message
+    assert "6.00% → 5.75%" in message
     assert "parser changed" in message
     assert "run-123" in message

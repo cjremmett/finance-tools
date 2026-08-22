@@ -6,10 +6,11 @@ This repository contains a shared Temporal worker pool that monitors:
 - Kalshi's APY for eligible prediction-account cash and open positions.
 - Marcus Online Savings Account APY.
 - Every CD rate currently advertised by Marcus.
+- X Money Boosted APY and Premium+ APY.
 - Newly created Kalshi prediction markets in configured categories.
 
 The worker process registers both workflows and all of their activities on the
-single `finance-tools` task queue. The interest-rate workflow runs its four
+single `finance-tools` task queue. The interest-rate workflow runs its five
 source activities concurrently, saves every successful result to PostgreSQL,
 and sends a Discord webhook message when rates or products change. Successful
 sources are retained even if another source exhausts its retries.

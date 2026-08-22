@@ -15,6 +15,7 @@ from interest_rates_scraper.activities import (
     scrape_kalshi_apy_activity,
     scrape_marcus_cds_activity,
     scrape_marcus_savings_activity,
+    scrape_x_money_apy_activity,
     send_discord_notification_activity,
 )
 from interest_rates_scraper.workflows import InterestRateScrapeWorkflow
@@ -35,6 +36,7 @@ ACTIVITIES = (
     scrape_kalshi_apy_activity,
     scrape_marcus_savings_activity,
     scrape_marcus_cds_activity,
+    scrape_x_money_apy_activity,
     persist_interest_rates_activity,
     send_discord_notification_activity,
     mark_notification_sent_activity,

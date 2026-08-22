@@ -20,6 +20,7 @@ SCRAPE_ACTIVITIES = {
     "kalshi": "scrape_kalshi_apy",
     "marcus_savings": "scrape_marcus_savings",
     "marcus_cds": "scrape_marcus_cds",
+    "x_money": "scrape_x_money_apy",
 }
 
 

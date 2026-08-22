@@ -17,6 +17,7 @@ from interest_rates_scraper.scrapers.marcus import (
     scrape_marcus_cds,
     scrape_marcus_savings,
 )
+from interest_rates_scraper.scrapers.x_money import scrape_x_money
 
 
 @activity.defn(name="scrape_fed_rate")
@@ -38,6 +39,11 @@ def scrape_marcus_savings_activity() -> ScrapeResult:
 @activity.defn(name="scrape_marcus_cds")
 def scrape_marcus_cds_activity() -> ScrapeResult:
     return scrape_marcus_cds(Settings.from_env().http_timeout_seconds)
+
+
+@activity.defn(name="scrape_x_money_apy")
+def scrape_x_money_apy_activity() -> ScrapeResult:
+    return scrape_x_money(Settings.from_env().http_timeout_seconds)
 
 
 @activity.defn(name="persist_interest_rates")

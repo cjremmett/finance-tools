@@ -9,6 +9,7 @@ from interest_rates_scraper.scrapers.marcus import (
     parse_marcus_cds,
     parse_marcus_savings,
 )
+from interest_rates_scraper.scrapers.x_money import parse_x_money
 
 
 def test_fed_uses_latest_non_missing_value() -> None:
@@ -84,4 +85,93 @@ def test_marcus_cd_parser_rejects_empty_or_partial_page() -> None:
     with pytest.raises(ScrapeError):
         parse_marcus_cds(
             "<p>6 months High-Yield CD 3.95% $500 Yes</p>"
+        )
+
+
+_X_MONEY_RATES_HTML = """
+<main>
+  <h1>X Money Stored Value Account Rates</h1>
+  <table>
+    <tr>
+      <td></td>
+      <td></td>
+      <td>X Premium Tier</td>
+      <td>X Premium+ Tier</td>
+    </tr>
+    <tr>
+      <td rowspan="2">Standard</td>
+      <td>Annual Percentage Yield ("APY")*</td>
+      <td>4.00%</td>
+      <td>6.00%</td>
+    </tr>
+    <tr>
+      <td>Interest Rate</td>
+      <td>3.92%</td>
+      <td>5.83%</td>
+    </tr>
+    <tr>
+      <td rowspan="2">Boosted**</td>
+      <td>Annual Percentage Yield ("APY")</td>
+      <td>6.00%</td>
+      <td>N/A</td>
+    </tr>
+    <tr>
+      <td>Interest Rate</td>
+      <td>5.83%</td>
+      <td>N/A</td>
+    </tr>
+  </table>
+  <p>
+    *Annual Percentage Yield ("APY") and interest rate is effective as of
+    07/27/2026. APY and interest rate are variable and subject to change
+    at any time.
+  </p>
+</main>
+"""
+
+
+def test_x_money_parser_reads_boosted_and_premium_plus_apys() -> None:
+    result = parse_x_money(_X_MONEY_RATES_HTML)
+    assert result.source == "x_money"
+    assert result.source_effective_date == "2026-07-27"
+    assert [(item.product_key, item.rate_percent) for item in result.observations] == [
+        ("x_money_boosted_apy", "6"),
+        ("x_money_premium_plus_apy", "6"),
+    ]
+    assert {item.product_name for item in result.observations} == {
+        "X Money Boosted APY",
+        "X Money Premium+ APY",
+    }
+    assert all(item.product_type == "savings_apy" for item in result.observations)
+
+
+def test_x_money_parser_rejects_missing_table() -> None:
+    with pytest.raises(ScrapeError, match="rates table was not found"):
+        parse_x_money("<p>X Money pays up to 6.00% APY.</p>")
+
+
+def test_x_money_parser_rejects_na_for_required_apy() -> None:
+    html = _X_MONEY_RATES_HTML.replace(
+        "<td>6.00%</td>\n      <td>N/A</td>",
+        "<td>N/A</td>\n      <td>N/A</td>",
+        1,
+    )
+    with pytest.raises(ScrapeError, match="numeric APY"):
+        parse_x_money(html)
+
+
+def test_x_money_parser_rejects_partial_table() -> None:
+    with pytest.raises(ScrapeError, match="Boosted and Premium\\+"):
+        parse_x_money(
+            """
+            <table>
+              <tr><td></td><td>X Premium Tier</td><td>X Premium+ Tier</td></tr>
+              <tr>
+                <td>Standard</td>
+                <td>Annual Percentage Yield ("APY")</td>
+                <td>4.00%</td>
+                <td>6.00%</td>
+              </tr>
+            </table>
+            """
         )

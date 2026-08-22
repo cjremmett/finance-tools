@@ -11,6 +11,7 @@ from interest_rates_scraper.activities import (
     scrape_kalshi_apy_activity,
     scrape_marcus_cds_activity,
     scrape_marcus_savings_activity,
+    scrape_x_money_apy_activity,
     send_discord_notification_activity,
 )
 from interest_rates_scraper.workflows import SCRAPE_ACTIVITIES
@@ -29,6 +30,7 @@ def test_workflow_registers_all_sources() -> None:
         "kalshi": "scrape_kalshi_apy",
         "marcus_savings": "scrape_marcus_savings",
         "marcus_cds": "scrape_marcus_cds",
+        "x_money": "scrape_x_money_apy",
     }
 
 
@@ -51,6 +53,7 @@ def test_combined_worker_registers_both_jobs() -> None:
         scrape_kalshi_apy_activity,
         scrape_marcus_savings_activity,
         scrape_marcus_cds_activity,
+        scrape_x_money_apy_activity,
         persist_interest_rates_activity,
         send_discord_notification_activity,
         mark_notification_sent_activity,
