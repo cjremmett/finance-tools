@@ -8,6 +8,11 @@ from concurrent.futures import ThreadPoolExecutor
 from temporalio.client import Client
 from temporalio.worker import Worker
 
+from crypto_carry.activities import (
+    fetch_crypto_carry_activity,
+    send_crypto_carry_discord_message_activity,
+)
+from crypto_carry.workflows import CryptoCarryWorkflow
 from interest_rates_scraper.activities import (
     mark_notification_sent_activity,
     persist_interest_rates_activity,
@@ -29,6 +34,7 @@ from kalshi_markets.workflows import KalshiMarketMonitorWorkflow
 WORKFLOWS = (
     InterestRateScrapeWorkflow,
     KalshiMarketMonitorWorkflow,
+    CryptoCarryWorkflow,
 )
 
 ACTIVITIES = (
@@ -43,6 +49,8 @@ ACTIVITIES = (
     poll_and_stage_kalshi_markets_activity,
     send_kalshi_discord_message_activity,
     mark_kalshi_notification_batch_sent_activity,
+    fetch_crypto_carry_activity,
+    send_crypto_carry_discord_message_activity,
 )
 
 
@@ -55,7 +63,7 @@ async def run_worker() -> None:
         namespace=temporal_namespace,
     )
     with ThreadPoolExecutor(
-        max_workers=12,
+        max_workers=16,
         thread_name_prefix="finance-tools-activity",
     ) as activity_executor:
         worker = Worker(

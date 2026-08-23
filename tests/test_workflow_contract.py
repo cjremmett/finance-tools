@@ -3,6 +3,11 @@ import asyncio
 from temporalio import workflow
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner
 
+from crypto_carry.activities import (
+    fetch_crypto_carry_activity,
+    send_crypto_carry_discord_message_activity,
+)
+from crypto_carry.workflows import CryptoCarryWorkflow
 from finance_tools.worker import ACTIVITIES, WORKFLOWS
 from interest_rates_scraper.activities import (
     mark_notification_sent_activity,
@@ -43,10 +48,11 @@ def test_workflow_passes_temporal_sandbox_validation() -> None:
     asyncio.run(validate())
 
 
-def test_combined_worker_registers_both_jobs() -> None:
+def test_combined_worker_registers_all_jobs() -> None:
     assert WORKFLOWS == (
         InterestRateScrapeWorkflow,
         KalshiMarketMonitorWorkflow,
+        CryptoCarryWorkflow,
     )
     assert ACTIVITIES == (
         scrape_fed_rate_activity,
@@ -60,4 +66,6 @@ def test_combined_worker_registers_both_jobs() -> None:
         poll_and_stage_kalshi_markets_activity,
         send_kalshi_discord_message_activity,
         mark_kalshi_notification_batch_sent_activity,
+        fetch_crypto_carry_activity,
+        send_crypto_carry_discord_message_activity,
     )

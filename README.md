@@ -8,8 +8,10 @@ This repository contains a shared Temporal worker pool that monitors:
 - Every CD rate currently advertised by Marcus.
 - X Money Boosted APY and Premium+ APY.
 - Newly created Kalshi prediction markets in configured categories.
+- Coinbase BTC/ETH spot prices and simple carry APYs for listed CME Bitcoin
+  and Ether futures.
 
-The worker process registers both workflows and all of their activities on the
+The worker process registers every workflow and all of their activities on the
 single `finance-tools` task queue. The interest-rate workflow runs its five
 source activities concurrently, saves every successful result to PostgreSQL,
 and sends a Discord webhook message when rates or products change. Successful
@@ -37,10 +39,11 @@ Every replica in the worker pool registers this complete Temporal contract:
 | --- | --- | --- |
 | `InterestRateScrapeWorkflow` | `finance-tools` | None |
 | `KalshiMarketMonitorWorkflow` | `finance-tools` | None |
+| `CryptoCarryWorkflow` | `finance-tools` | None |
 
 The namespace defaults to `default`. Do not run workers with different workflow
 registrations on the shared queue; every `finance-tools` worker must register
-both workflow types and every activity. Temporal Schedules are configured
+every workflow type and every activity. Temporal Schedules are configured
 externally through the CLI rather than managed by this repository.
 
 ## Run with Docker
@@ -142,10 +145,49 @@ The downloaded key files under `kalshi_markets/` are not read by the worker.
 After putting the key ID and a base64-encoded PEM in `.env`, delete those local
 plaintext files manually if they are no longer needed.
 
+## Crypto carry digest
+
+`CryptoCarryWorkflow` runs on the same `finance-tools` task queue:
+
+```bash
+temporal workflow start \
+  --type CryptoCarryWorkflow \
+  --task-queue finance-tools \
+  --workflow-id "crypto-carry-$(date +%s)"
+```
+
+Configure the shared worker with:
+
+```dotenv
+CRYPTO_CARRY_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+```
+
+Each run fetches Coinbase BTC-USD and ETH-USD spots and delayed CME Bitcoin
+and Ether futures quotes from TradingView's public futures scanner. It reports
+the simple carry APY of every listed standard BTC and ETH contract with at
+least seven days to expiry, picking long-spot/short-futures or
+short-spot/long-futures so the APY is non-negative. Fees, margin interest, and
+spread are ignored. Micros, Friday weeklies, euro-quoted, ratio, and volatility
+contracts are excluded.
+
+APY uses spot notional: `((F - S) / S) * 365 / days`, where `days` is the
+actual time remaining until CME last trade (16:00 Europe/London on the
+contract's expiration date). Front-month APYs are omitted when fewer than
+seven days remain because they are dominated by a short tenor rather than
+the basis.
+
+CME crypto futures cash-settle to CF Benchmarks (BRR / ETHUSD_RR), not
+Coinbase, so this is a theoretical basis screen rather than a locked delivery
+arb. CME Group's own delayed-quote pages block automated access; the scanner
+is unofficial and delayed. Schema drift or a missing asset fails the run and
+sends a Discord failure message after Temporal exhausts three activity
+attempts. Successful runs always post the digest; there is no database
+snapshot.
+
 ## Temporal Schedules
 
-The following schedules run interest-rate checks hourly on the hour and Kalshi
-market checks daily at 5:00 a.m. Eastern:
+The following schedules run interest-rate checks hourly on the hour and the
+Kalshi and crypto-carry jobs daily at 5:00 a.m. Eastern:
 
 ```bash
 temporal schedule create \
@@ -164,6 +206,15 @@ temporal schedule create \
   --workflow-id kalshi-markets-daily \
   --type KalshiMarketMonitorWorkflow \
   --task-queue finance-tools
+
+temporal schedule create \
+  --schedule-id crypto-carry-daily \
+  --cron "0 5 * * *" \
+  --time-zone "America/New_York" \
+  --overlap-policy Skip \
+  --workflow-id crypto-carry-daily \
+  --type CryptoCarryWorkflow \
+  --task-queue finance-tools
 ```
 
 Add `--address` and `--namespace` when the CLI is not already configured for
@@ -178,10 +229,10 @@ uv sync
 uv run pytest
 ```
 
-Parser tests use local HTML fixtures and never contact the live financial
-sites. Database behavior is tested with SQLite; deployment uses PostgreSQL,
-including a transaction-level advisory lock that serializes snapshot
-comparison.
+Parser tests use local HTML and JSON fixtures and never contact the live
+financial sites. Database behavior is tested with SQLite; deployment uses
+PostgreSQL, including a transaction-level advisory lock that serializes
+snapshot comparison.
 
 ## Data and failure behavior
 

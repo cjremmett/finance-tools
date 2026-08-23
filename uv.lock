@@ -327,6 +327,7 @@ dependencies = [
     { name = "requests" },
     { name = "sqlalchemy" },
     { name = "temporalio" },
+    { name = "tzdata" },
 ]
 
 [package.dev-dependencies]
@@ -344,6 +345,7 @@ requires-dist = [
     { name = "requests", specifier = ">=2.32,<3" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "temporalio", specifier = ">=1.15,<2" },
+    { name = "tzdata", specifier = ">=2024" },
 ]
 
 [package.metadata.requires-dev]
