@@ -594,6 +594,140 @@ def test_duration_filter_avoids_event_and_series_requests() -> None:
     assert calls == ["/markets", "/search/tags_by_categories"]
 
 
+def test_series_catalog_supplies_categories_missing_from_search_tags() -> None:
+    client = object.__new__(KalshiClient)
+    client.settings = replace(
+        _settings("sqlite://"),
+        category_whitelist=("Economics", "Transportation"),
+    )
+    calls: list[str] = []
+
+    def paginate(
+        path: str, item_key: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        calls.append(path)
+        if path == "/markets":
+            return [
+                {
+                    "ticker": "KXTSA-26",
+                    "event_ticker": "KXTSA-26",
+                    "title": "TSA check-ins",
+                    "created_time": "2026-07-26T12:00:00Z",
+                    "open_time": "2026-07-26T12:00:00Z",
+                    "close_time": "2026-09-01T12:00:00Z",
+                }
+            ]
+        assert path == "/events"
+        return [{"event_ticker": "KXTSA-26", "series_ticker": "KXTSA"}]
+
+    def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append(path)
+        if path == "/search/tags_by_categories":
+            return {"tags_by_categories": {"Economics": ["Fed"]}}
+        if path == "/series":
+            return {
+                "series": [
+                    {"ticker": "KXECON", "category": "Economics"},
+                    {"ticker": "KXTSA", "category": "Transportation"},
+                    {"ticker": "KXWORLD", "category": "World"},
+                ]
+            }
+        raise AssertionError(path)
+
+    client._paginate = paginate
+    client._get = get
+    result = client.fetch_new_markets(
+        datetime(2026, 7, 26, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 26, 13, tzinfo=timezone.utc),
+    )
+
+    assert [market.ticker for market in result.markets] == ["KXTSA-26"]
+    assert result.markets[0].category == "Transportation"
+    assert result.categories == ["Economics", "Transportation", "World"]
+    assert calls == [
+        "/markets",
+        "/search/tags_by_categories",
+        "/series",
+        "/events",
+    ]
+
+
+def test_whitelist_category_missing_from_tags_and_series_is_rejected() -> None:
+    client = object.__new__(KalshiClient)
+    client.settings = replace(
+        _settings("sqlite://"),
+        category_whitelist=("Economics", "Transportation"),
+    )
+    calls: list[str] = []
+
+    def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append(path)
+        if path == "/search/tags_by_categories":
+            return {"tags_by_categories": {"Economics": []}}
+        if path == "/series":
+            return {"series": [{"ticker": "KXECON", "category": "Economics"}]}
+        raise AssertionError(path)
+
+    client._get = get
+    with pytest.raises(RuntimeError, match="unknown Kalshi categories: Transportation"):
+        client.fetch_categories()
+    assert calls == ["/search/tags_by_categories", "/series"]
+
+
+def test_series_only_categories_are_included_when_markets_are_classified() -> None:
+    client = object.__new__(KalshiClient)
+    client.settings = _settings("sqlite://")
+    calls: list[str] = []
+
+    def paginate(
+        path: str, item_key: str, params: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        calls.append(path)
+        if path == "/markets":
+            return [
+                {
+                    "ticker": "KXALIENS-26AUG",
+                    "event_ticker": "KXALIENS-27",
+                    "title": "Will aliens be confirmed?",
+                    "created_time": "2026-07-26T12:00:00Z",
+                }
+            ]
+        assert path == "/events"
+        return [{"event_ticker": "KXALIENS-27", "series_ticker": "KXALIENS"}]
+
+    def get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        calls.append(path)
+        if path == "/search/tags_by_categories":
+            return {
+                "tags_by_categories": {
+                    "Economics": [],
+                    "Science and Technology": [],
+                }
+            }
+        if path == "/series":
+            return {
+                "series": [
+                    {"ticker": "KXALIENS", "category": "Science and Technology"},
+                    {"ticker": "KXWORLD", "category": "World"},
+                ]
+            }
+        raise AssertionError(path)
+
+    client._paginate = paginate
+    client._get = get
+    result = client.fetch_new_markets(
+        datetime(2026, 7, 26, 10, tzinfo=timezone.utc),
+        datetime(2026, 7, 26, 13, tzinfo=timezone.utc),
+    )
+
+    assert result.categories == [
+        "Economics",
+        "Science and Technology",
+        "World",
+    ]
+    assert calls.count("/series") == 1
+
+
 def test_kalshi_workflow_passes_temporal_sandbox_validation() -> None:
     async def validate() -> None:
         SandboxedWorkflowRunner().prepare_workflow(

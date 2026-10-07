@@ -141,18 +141,55 @@ class KalshiClient:
             if not cursor:
                 return items
 
-    def fetch_categories(self) -> list[str]:
+    def _search_categories(self) -> set[str]:
         taxonomy = self._get("/search/tags_by_categories").get(
             "tags_by_categories"
         )
         if not isinstance(taxonomy, dict):
             raise RuntimeError("Kalshi category taxonomy is unavailable")
-        categories = sorted(str(category) for category in taxonomy)
-        unknown = set(self.settings.category_whitelist) - set(categories)
+        return {str(category) for category in taxonomy}
+
+    def _fetch_series_rows(self) -> list[dict[str, Any]]:
+        series_payload = self._get("/series")
+        series_rows = series_payload.get("series")
+        if not isinstance(series_rows, list):
+            raise RuntimeError("Kalshi series catalog is unavailable")
+        return series_rows
+
+    @staticmethod
+    def _series_category_names(
+        series_rows: list[dict[str, Any]],
+    ) -> set[str]:
+        return {
+            str(row["category"])
+            for row in series_rows
+            if row.get("category")
+        }
+
+    def _require_whitelist(self, categories: set[str]) -> list[str]:
+        if not categories:
+            raise RuntimeError("Kalshi category taxonomy is unavailable")
+        unknown = set(self.settings.category_whitelist) - categories
         if unknown:
             raise RuntimeError(
                 "unknown Kalshi categories: " + ", ".join(sorted(unknown))
             )
+        return sorted(categories)
+
+    def _observed_categories(
+        self,
+    ) -> tuple[list[str], list[dict[str, Any]] | None]:
+        # Search tags omit series categories that still classify markets.
+        # Transportation is one of those names.
+        categories = self._search_categories()
+        series_rows: list[dict[str, Any]] | None = None
+        if not set(self.settings.category_whitelist) <= categories:
+            series_rows = self._fetch_series_rows()
+            categories |= self._series_category_names(series_rows)
+        return self._require_whitelist(categories), series_rows
+
+    def fetch_categories(self) -> list[str]:
+        categories, _series_rows = self._observed_categories()
         return categories
 
     def _fetch_events(
@@ -230,7 +267,7 @@ class KalshiClient:
             <= window_end
         ]
 
-        categories = self.fetch_categories()
+        categories, series_rows = self._observed_categories()
         market_rows = [
             row
             for row in market_rows
@@ -246,10 +283,11 @@ class KalshiClient:
         )
         events = self._fetch_events(event_tickers)
 
-        series_payload = self._get("/series")
-        series_rows = series_payload.get("series")
-        if not isinstance(series_rows, list):
-            raise RuntimeError("Kalshi series catalog is unavailable")
+        if series_rows is None:
+            series_rows = self._fetch_series_rows()
+            categories = sorted(
+                set(categories) | self._series_category_names(series_rows)
+            )
         series_categories = {
             str(row["ticker"]): str(row["category"])
             for row in series_rows
