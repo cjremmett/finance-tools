@@ -93,55 +93,55 @@ _X_MONEY_RATES_HTML = """
   <h1>X Money Stored Value Account Rates</h1>
   <table>
     <tr>
-      <td></td>
-      <td></td>
-      <td>X Premium Tier</td>
-      <td>X Premium+ Tier</td>
+      <td>The X Subscription</td>
+      <td>Free or Plus</td>
+      <td>Premium, Super, Ultra</td>
     </tr>
     <tr>
-      <td rowspan="2">Standard</td>
-      <td>Annual Percentage Yield ("APY")*</td>
+      <td>Legacy X Premium</td>
+      <td>Basic, Premium, or no subscription</td>
+      <td>Premium+</td>
+    </tr>
+    <tr>
+      <td>Standard Annual Percentage Yield ("APY")*</td>
       <td>4.00%</td>
       <td>6.00%</td>
     </tr>
     <tr>
-      <td>Interest Rate</td>
+      <td>Standard Interest Rate</td>
       <td>3.92%</td>
       <td>5.83%</td>
     </tr>
     <tr>
-      <td rowspan="2">Boosted**</td>
-      <td>Annual Percentage Yield ("APY")</td>
+      <td>Boosted Annual Percentage Yield ("APY")**</td>
       <td>6.00%</td>
       <td>N/A</td>
     </tr>
     <tr>
-      <td>Interest Rate</td>
+      <td>Boosted Interest Rate**</td>
       <td>5.83%</td>
       <td>N/A</td>
     </tr>
   </table>
   <p>
     *Annual Percentage Yield ("APY") and interest rate is effective as of
-    07/27/2026. APY and interest rate are variable and subject to change
+    10/12/2026. APY and interest rate are variable and subject to change
     at any time.
   </p>
 </main>
 """
 
 
-def test_x_money_parser_reads_boosted_and_premium_plus_apys() -> None:
+def test_x_money_parser_reads_premium_plus_apy() -> None:
     result = parse_x_money(_X_MONEY_RATES_HTML)
     assert result.source == "x_money"
-    assert result.source_effective_date == "2026-07-27"
-    assert [(item.product_key, item.rate_percent) for item in result.observations] == [
-        ("x_money_boosted_apy", "6"),
-        ("x_money_premium_plus_apy", "6"),
+    assert result.source_effective_date == "2026-10-12"
+    assert [
+        (item.product_key, item.product_name, item.rate_percent)
+        for item in result.observations
+    ] == [
+        ("x_money_premium_plus_apy", "X Money Premium+ APY", "6"),
     ]
-    assert {item.product_name for item in result.observations} == {
-        "X Money Boosted APY",
-        "X Money Premium+ APY",
-    }
     assert all(item.product_type == "savings_apy" for item in result.observations)
 
 
@@ -151,26 +151,25 @@ def test_x_money_parser_rejects_missing_table() -> None:
 
 
 def test_x_money_parser_rejects_na_for_required_apy() -> None:
-    html = _X_MONEY_RATES_HTML.replace(
-        "<td>6.00%</td>\n      <td>N/A</td>",
-        "<td>N/A</td>\n      <td>N/A</td>",
-        1,
-    )
+    html = _X_MONEY_RATES_HTML.replace("<td>6.00%</td>", "<td>N/A</td>", 1)
     with pytest.raises(ScrapeError, match="numeric APY"):
         parse_x_money(html)
 
 
 def test_x_money_parser_rejects_partial_table() -> None:
-    with pytest.raises(ScrapeError, match="Boosted and Premium\\+"):
+    with pytest.raises(ScrapeError, match="Standard APY"):
         parse_x_money(
             """
             <table>
-              <tr><td></td><td>X Premium Tier</td><td>X Premium+ Tier</td></tr>
               <tr>
-                <td>Standard</td>
-                <td>Annual Percentage Yield ("APY")</td>
-                <td>4.00%</td>
-                <td>6.00%</td>
+                <td>The X Subscription</td>
+                <td>Free or Plus</td>
+                <td>Premium, Super, Ultra</td>
+              </tr>
+              <tr>
+                <td>Legacy X Premium</td>
+                <td>Basic, Premium, or no subscription</td>
+                <td>Premium+</td>
               </tr>
             </table>
             """

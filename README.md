@@ -6,7 +6,7 @@ This repository contains a shared Temporal worker pool that monitors:
 - Kalshi's APY for eligible prediction-account cash and open positions.
 - Marcus Online Savings Account APY.
 - Every CD rate currently advertised by Marcus.
-- X Money Boosted APY and Premium+ APY.
+- X Money Premium+ APY.
 - Newly created Kalshi prediction markets in configured categories.
 - Coinbase BTC/ETH spot prices and simple carry APYs for listed CME Bitcoin
   and Ether futures.
