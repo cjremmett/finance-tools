@@ -6,7 +6,12 @@ from decimal import Decimal
 import requests
 
 from interest_rates_scraper.config import Settings
-from interest_rates_scraper.models import DiscordNotification, RateChange
+from interest_rates_scraper.models import (
+    FED_MAINTENANCE_ERROR,
+    DiscordNotification,
+    RateChange,
+    SourceFailure,
+)
 
 SOURCE_ORDER = {
     "federal_reserve": 0,
@@ -57,6 +62,15 @@ def _change_line(change: RateChange) -> str:
     )
 
 
+def _failure_line(failure: SourceFailure) -> str:
+    if (
+        failure.source == "federal_reserve"
+        and FED_MAINTENANCE_ERROR in failure.error
+    ):
+        return "• **Federal Reserve** is down for maintenance"
+    return f"• **{failure.source}**: {failure.error[:300]}"
+
+
 def build_discord_message(notification: DiscordNotification) -> str:
     heading = (
         "📊 **Interest-rate baseline**"
@@ -81,10 +95,7 @@ def build_discord_message(notification: DiscordNotification) -> str:
             )
     if notification.failures:
         sections.append("\n⚠️ **Scrape failures after retries**")
-        sections.extend(
-            f"• **{failure.source}**: {failure.error[:300]}"
-            for failure in notification.failures
-        )
+        sections.extend(_failure_line(failure) for failure in notification.failures)
     sections.append(f"\nRun: `{notification.workflow_run_id}`")
     return "\n".join(sections)[:2000]
 

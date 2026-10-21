@@ -7,6 +7,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from interest_rates_scraper.models import (
+    FED_MAINTENANCE_ERROR,
     DiscordNotification,
     PersistRequest,
     PersistResult,
@@ -14,6 +15,23 @@ from interest_rates_scraper.models import (
     SourceFailure,
     WorkflowResult,
 )
+
+
+def failure_message(error: BaseException) -> str:
+    """Return the Fed maintenance message when it is anywhere in the cause chain.
+
+    Temporal wraps an activity failure as "Activity task failed". The scrape
+    message is on the cause, so Discord would otherwise show that wrapper.
+    """
+    current: BaseException | None = error
+    for _ in range(8):
+        if current is None:
+            break
+        if FED_MAINTENANCE_ERROR in str(current):
+            return FED_MAINTENANCE_ERROR
+        current = current.__cause__
+    return str(error)
+
 
 SCRAPE_ACTIVITIES = {
     "federal_reserve": "scrape_fed_rate",
@@ -51,7 +69,9 @@ class InterestRateScrapeWorkflow:
         failures: list[SourceFailure] = []
         for source, outcome in zip(tasks.keys(), outcomes, strict=True):
             if isinstance(outcome, BaseException):
-                failures.append(SourceFailure(source=source, error=str(outcome)))
+                failures.append(
+                    SourceFailure(source=source, error=failure_message(outcome))
+                )
             else:
                 results.append(outcome)
 

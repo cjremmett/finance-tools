@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-import pytest
+import json
 
+import pytest
+import requests
+
+from interest_rates_scraper.models import FED_MAINTENANCE_ERROR
 from interest_rates_scraper.scrapers.common import ScrapeError
 from interest_rates_scraper.scrapers.fed import _latest_value, scrape_fed
 from interest_rates_scraper.scrapers.kalshi import parse_kalshi
@@ -25,6 +29,129 @@ def test_fed_uses_latest_non_missing_value() -> None:
 def test_fed_requires_api_key() -> None:
     with pytest.raises(ScrapeError, match="FRED_API_KEY is required"):
         scrape_fed(20, None)
+
+
+class _FedResponse:
+    def __init__(
+        self,
+        status_code: int,
+        headers: dict[str, str],
+        body: bytes,
+        *,
+        allow_status_check: bool = True,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers
+        self.content = body
+        self.allow_status_check = allow_status_check
+
+    def raise_for_status(self) -> None:
+        if not self.allow_status_check:
+            raise AssertionError("maintenance response was parsed as an API error")
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"status {self.status_code}")
+
+    def json(self) -> object:
+        return json.loads(self.content)
+
+
+def _patch_fed(monkeypatch: pytest.MonkeyPatch, response: _FedResponse) -> None:
+    def fake_get(*args: object, **kwargs: object) -> _FedResponse:
+        return response
+
+    monkeypatch.setattr(
+        "interest_rates_scraper.scrapers.fed.requests.get", fake_get
+    )
+
+
+def test_fed_reports_maintenance_for_html_content_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = b"<p>Please try again later.</p>"
+    _patch_fed(
+        monkeypatch,
+        _FedResponse(
+            200,
+            {"Content-Type": "Text/HTML; charset=utf-8"},
+            page,
+            allow_status_check=False,
+        ),
+    )
+    with pytest.raises(ScrapeError, match=f"^{FED_MAINTENANCE_ERROR}$"):
+        scrape_fed(20, "secret-fred-key")
+
+
+def test_fed_reports_maintenance_when_html_copy_and_type_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = (
+        b"\xef\xbb\xbf  <!-- scheduled work -->\n"
+        b"<!DOCTYPE HTML PUBLIC '-//W3C//DTD HTML 4.01//EN'>\n"
+        b"<html><head><title>Unavailable</title></head>"
+        b"<body><h1>Back shortly</h1></body></html>"
+    )
+    _patch_fed(
+        monkeypatch,
+        _FedResponse(
+            503,
+            {"Content-Type": "application/octet-stream"},
+            page,
+            allow_status_check=False,
+        ),
+    )
+    with pytest.raises(ScrapeError, match=f"^{FED_MAINTENANCE_ERROR}$") as caught:
+        scrape_fed(20, "secret-fred-key")
+    message = str(caught.value)
+    assert "secret-fred-key" not in message
+    assert "Back shortly" not in message
+    assert "Unavailable" not in message
+
+
+def test_fed_reports_maintenance_when_html_follows_a_banner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = b"Notice: temporary\n<html><body><p>check back</p></body></html>"
+    _patch_fed(
+        monkeypatch,
+        _FedResponse(200, {}, page, allow_status_check=False),
+    )
+    with pytest.raises(ScrapeError, match=f"^{FED_MAINTENANCE_ERROR}$"):
+        scrape_fed(20, "secret-fred-key")
+
+
+def test_fed_keeps_json_api_errors_generic(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_fed(
+        monkeypatch,
+        _FedResponse(
+            400,
+            {"Content-Type": "application/json"},
+            b'{"error_code":400,"error_message":"site is down for maintenance"}',
+        ),
+    )
+    with pytest.raises(ScrapeError, match="HTTPError") as caught:
+        scrape_fed(20, "secret-fred-key")
+    assert FED_MAINTENANCE_ERROR not in str(caught.value)
+    assert "secret-fred-key" not in str(caught.value)
+
+
+def test_fed_reads_json_observations(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_get(*args: object, **kwargs: object) -> _FedResponse:
+        params = kwargs["params"]
+        assert isinstance(params, dict)
+        series_id = params["series_id"]
+        value = "3.75" if series_id == "DFEDTARL" else "4.00"
+        return _FedResponse(
+            200,
+            {"Content-Type": "application/json"},
+            json.dumps(
+                {"observations": [{"date": "2026-10-21", "value": value}]}
+            ).encode(),
+        )
+
+    monkeypatch.setattr("interest_rates_scraper.scrapers.fed.requests.get", fake_get)
+    result = scrape_fed(20, "secret-fred-key")
+    assert result.source_effective_date == "2026-10-21"
+    assert [item.rate_percent for item in result.observations] == ["3.75", "4"]
 
 
 def test_kalshi_parser_reads_prediction_market_rate_only() -> None:

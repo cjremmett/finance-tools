@@ -1,5 +1,6 @@
 from interest_rates_scraper.discord import build_discord_message
 from interest_rates_scraper.models import (
+    FED_MAINTENANCE_ERROR,
     DiscordNotification,
     RateChange,
     SourceFailure,
@@ -87,3 +88,46 @@ def test_discord_message_formats_and_orders_changes() -> None:
     assert "6.00% → 5.75%" in message
     assert "parser changed" in message
     assert "run-123" in message
+
+
+def test_discord_message_reports_fed_maintenance() -> None:
+    message = build_discord_message(
+        DiscordNotification(
+            workflow_run_id="run-maint",
+            baseline=False,
+            changes=[],
+            failures=[
+                SourceFailure(
+                    source="federal_reserve",
+                    error=(
+                        "Activity task failed\n"
+                        f"ScrapeError: {FED_MAINTENANCE_ERROR}"
+                    ),
+                ),
+                SourceFailure(source="kalshi", error="parser changed"),
+            ],
+        )
+    )
+    assert "• **Federal Reserve** is down for maintenance" in message
+    assert "federal_reserve" not in message
+    assert "Activity task failed" not in message
+    assert "JSONDecodeError" not in message
+    assert "parser changed" in message
+
+
+def test_discord_message_keeps_other_fed_failures_generic() -> None:
+    message = build_discord_message(
+        DiscordNotification(
+            workflow_run_id="run-generic",
+            baseline=False,
+            changes=[],
+            failures=[
+                SourceFailure(
+                    source="federal_reserve",
+                    error="FRED API request failed for series DFEDTARL (JSONDecodeError)",
+                )
+            ],
+        )
+    )
+    assert "JSONDecodeError" in message
+    assert "down for maintenance" not in message

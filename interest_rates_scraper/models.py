@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+# Stable text stored on a Fed scrape failure and matched by the Discord formatter.
+FED_MAINTENANCE_ERROR = "Federal Reserve is down for maintenance"
+
 
 @dataclass(frozen=True)
 class RateObservation:
