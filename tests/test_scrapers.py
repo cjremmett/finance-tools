@@ -27,14 +27,37 @@ def test_fed_requires_api_key() -> None:
         scrape_fed(20, None)
 
 
-def test_kalshi_parser_is_scoped_to_rate_sentence() -> None:
+def test_kalshi_parser_reads_prediction_market_rate_only() -> None:
+    result = parse_kalshi(
+        """
+        <span><time datetime="2026-10-20T23:46:09Z">Updated today</time></span>
+        <article>
+          <h1>Prediction Market Interest</h1>
+          <p><b>Rate:</b> 3.50% APY. This rate is variable and can change at any time.</p>
+          <p>Balances of $250 or more are eligible.</p>
+          <h1>Perpetuals (Perps) Interest</h1>
+          <p><b>Rate:</b> 4.25% APY. This rate is variable and can change at any time.</p>
+          <h1>Earn 7% APY on Perpetuals (Perps)</h1>
+          <p>Perps traders can now earn 7% APY. That's double our standard 3.50% rate.</p>
+        </article>
+        """
+    )
+    assert result.source == "kalshi"
+    assert result.source_effective_date == "2026-10-20"
+    observation = result.observations[0]
+    assert observation.product_key == "kalshi_predictions_apy"
+    assert observation.product_name == "Kalshi Cash and Open Positions APY"
+    assert observation.rate_percent == "3.5"
+    assert observation.source_effective_date == "2026-10-20"
+
+
+def test_kalshi_parser_falls_back_to_written_date() -> None:
     result = parse_kalshi(
         """
         <article>
           <time>March 17, 2026</time>
-          <h2>Interest Rates and Payments</h2>
-          <p>The interest rate is set at 3.25% and applies to eligible accounts.</p>
-          <p>Balances of $250 or more are eligible.</p>
+          <h1>Prediction Market Interest</h1>
+          <p>Rate: 3.25% APY.</p>
         </article>
         """
     )
@@ -43,8 +66,33 @@ def test_kalshi_parser_is_scoped_to_rate_sentence() -> None:
 
 
 def test_kalshi_parser_rejects_missing_rate() -> None:
-    with pytest.raises(ScrapeError):
+    with pytest.raises(ScrapeError, match="Prediction Market Interest"):
         parse_kalshi("<p>Interest rates are variable.</p>")
+
+
+def test_kalshi_parser_rejects_section_without_rate() -> None:
+    with pytest.raises(ScrapeError, match="prediction-market APY"):
+        parse_kalshi(
+            """
+            <article>
+              <h1>Prediction Market Interest</h1>
+              <p>Rates are variable.</p>
+            </article>
+            """
+        )
+
+
+def test_kalshi_parser_rejects_ambiguous_prediction_rate() -> None:
+    with pytest.raises(ScrapeError, match="prediction-market APY"):
+        parse_kalshi(
+            """
+            <article>
+              <h1>Prediction Market Interest</h1>
+              <p>Rate: 3.50% APY.</p>
+              <p>Rate: 3.75% APY.</p>
+            </article>
+            """
+        )
 
 
 def test_marcus_savings_parser() -> None:
