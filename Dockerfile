@@ -6,6 +6,7 @@ COPY finance_tools ./finance_tools
 COPY interest_rates_scraper ./interest_rates_scraper
 COPY kalshi_markets ./kalshi_markets
 COPY crypto_carry ./crypto_carry
+COPY thetadata_etl ./thetadata_etl
 RUN python -m pip wheel --no-cache-dir --wheel-dir /wheels .
 
 FROM python:3.12-slim

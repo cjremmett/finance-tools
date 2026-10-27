@@ -30,11 +30,20 @@ from kalshi_markets.activities import (
     send_kalshi_discord_message_activity,
 )
 from kalshi_markets.workflows import KalshiMarketMonitorWorkflow
+from thetadata_etl.activities import (
+    append_symbols_to_iceberg_activity,
+    ensure_securities_catalog_activity,
+    fetch_and_upload_symbols_activity,
+    resolve_symbol_fetch_date_activity,
+    symbol_csv_exists_activity,
+)
+from thetadata_etl.workflows import ThetaDataSecuritiesWorkflow
 
 WORKFLOWS = (
     InterestRateScrapeWorkflow,
     KalshiMarketMonitorWorkflow,
     CryptoCarryWorkflow,
+    ThetaDataSecuritiesWorkflow,
 )
 
 ACTIVITIES = (
@@ -51,6 +60,11 @@ ACTIVITIES = (
     mark_kalshi_notification_batch_sent_activity,
     fetch_crypto_carry_activity,
     send_crypto_carry_discord_message_activity,
+    resolve_symbol_fetch_date_activity,
+    ensure_securities_catalog_activity,
+    symbol_csv_exists_activity,
+    fetch_and_upload_symbols_activity,
+    append_symbols_to_iceberg_activity,
 )
 
 

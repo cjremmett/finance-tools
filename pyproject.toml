@@ -7,11 +7,16 @@ requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.16,<2",
     "beautifulsoup4>=4.13,<5",
+    "boto3>=1.35,<2",
     "cryptography>=45,<47",
+    "duckdb>=2.0.0,<2.1",
+    "polars>=1.33,<3",
     "psycopg[binary]>=3.2,<4",
+    "python-dotenv>=1.2.4",
     "requests>=2.32,<3",
     "sqlalchemy>=2.0,<3",
     "temporalio>=1.15,<2",
+    "thetadata>=1.0.15",
     "tzdata>=2024",
 ]
 
@@ -20,6 +25,7 @@ finance-tools-worker = "finance_tools.worker:main"
 interest-rate-worker = "interest_rates_scraper.worker:main"
 kalshi-market-worker = "kalshi_markets.worker:main"
 crypto-carry-worker = "crypto_carry.worker:main"
+thetadata-etl-worker = "thetadata_etl.worker:main"
 
 [dependency-groups]
 dev = [
@@ -37,8 +43,12 @@ packages = [
     "interest_rates_scraper",
     "kalshi_markets",
     "crypto_carry",
+    "thetadata_etl",
 ]
-exclude = ["kalshi_markets/kalshi-api-key*.txt"]
+exclude = [
+    "kalshi_markets/kalshi-api-key*.txt",
+    "thetadata_etl/*.csv",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

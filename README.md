@@ -10,6 +10,8 @@ This repository contains a shared Temporal worker pool that monitors:
 - Newly created Kalshi prediction markets in configured categories.
 - Coinbase BTC/ETH spot prices and simple carry APYs for listed CME Bitcoin
   and Ether futures.
+- Daily ThetaData stock symbols and option underlyings, stored as dated CSVs
+  in Garage and appended to the `securities_data` Iceberg warehouse.
 
 The worker process registers every workflow and all of their activities on the
 single `finance-tools` task queue. The interest-rate workflow runs its five
@@ -40,6 +42,7 @@ Every replica in the worker pool registers this complete Temporal contract:
 | `InterestRateScrapeWorkflow` | `finance-tools` | None |
 | `KalshiMarketMonitorWorkflow` | `finance-tools` | None |
 | `CryptoCarryWorkflow` | `finance-tools` | None |
+| `ThetaDataSecuritiesWorkflow` | `finance-tools` | None |
 
 The namespace defaults to `default`. Do not run workers with different workflow
 registrations on the shared queue; every `finance-tools` worker must register
@@ -184,10 +187,40 @@ sends a Discord failure message after Temporal exhausts three activity
 attempts. Successful runs always post the digest; there is no database
 snapshot.
 
+## ThetaData securities snapshot
+
+`ThetaDataSecuritiesWorkflow` runs on the same `finance-tools` task queue:
+
+```bash
+temporal workflow start \
+  --type ThetaDataSecuritiesWorkflow \
+  --task-queue finance-tools \
+  --workflow-id "thetadata-securities-$(date +%s)"
+```
+
+Configure the shared worker with:
+
+```dotenv
+THETADATA_API_KEY=your-thetadata-api-key
+GARAGE_ACCESS_KEY_ID=your-garage-access-key
+GARAGE_SECRET_ACCESS_KEY=your-garage-secret-key
+QUACK_TOKEN=your-quack-token
+```
+
+Each run uses the America/New_York calendar day. For `stocks` and
+`option_underlyings`, it checks Garage for
+`s3://securities-data/securities/<dataset>/YYYY-MM-DD.csv`. A missing object
+is fetched from ThetaData, given a `date` column, and uploaded. The workflow
+then attaches the `securities_data` Lakekeeper warehouse through the DuckDB
+server on port 9494, creates `securities_data.securities` and the symbol
+tables when they are absent, and inserts that day's CSV. DuckDB writes the
+Iceberg data files as Parquet. A date already present in the table is not
+inserted again.
+
 ## Temporal Schedules
 
 The following schedules run interest-rate checks hourly on the hour and the
-Kalshi and crypto-carry jobs daily at 5:00 a.m. Eastern:
+Kalshi, crypto-carry, and ThetaData securities jobs daily at 5:00 a.m. Eastern:
 
 ```bash
 temporal schedule create \
@@ -214,6 +247,15 @@ temporal schedule create \
   --overlap-policy Skip \
   --workflow-id crypto-carry-daily \
   --type CryptoCarryWorkflow \
+  --task-queue finance-tools
+
+temporal schedule create \
+  --schedule-id thetadata-securities-daily \
+  --cron "0 5 * * *" \
+  --time-zone "America/New_York" \
+  --overlap-policy Skip \
+  --workflow-id thetadata-securities-daily \
+  --type ThetaDataSecuritiesWorkflow \
   --task-queue finance-tools
 ```
 
