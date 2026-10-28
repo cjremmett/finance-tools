@@ -23,12 +23,38 @@ class GarageStore:
         return True
 
     def put_csv(self, key: str, body: bytes) -> None:
+        self.put_bytes(key, body, "text/csv; charset=utf-8")
+
+    def put_bytes(self, key: str, body: bytes, content_type: str) -> None:
         self.client.put_object(
             Bucket=self.bucket,
             Key=key,
             Body=body,
-            ContentType="text/csv; charset=utf-8",
+            ContentType=content_type,
         )
+
+    def get_bytes(self, key: str) -> bytes:
+        response = self.client.get_object(Bucket=self.bucket, Key=key)
+        body = response["Body"].read()
+        if isinstance(body, str):
+            return body.encode("utf-8")
+        return body
+
+    def list_keys(self, prefix: str) -> list[str]:
+        keys: list[str] = []
+        token: str | None = None
+        while True:
+            kwargs: dict[str, object] = {"Bucket": self.bucket, "Prefix": prefix}
+            if token is not None:
+                kwargs["ContinuationToken"] = token
+            page = self.client.list_objects_v2(**kwargs)
+            for item in page.get("Contents", []):
+                keys.append(item["Key"])
+            if not page.get("IsTruncated"):
+                return keys
+            token = page.get("NextContinuationToken")
+            if not token:
+                return keys
 
 
 def garage_store(settings: Settings) -> GarageStore:

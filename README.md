@@ -12,6 +12,8 @@ This repository contains a shared Temporal worker pool that monitors:
   and Ether futures.
 - Daily ThetaData stock symbols and option underlyings, stored as dated CSVs
   in Garage and appended to the `securities_data` Iceberg warehouse.
+- The previous session's option prices, volume, and open interest for symbols
+  that have both a stock listing and an options chain.
 
 The worker process registers every workflow and all of their activities on the
 single `finance-tools` task queue. The interest-rate workflow runs its five
@@ -43,6 +45,7 @@ Every replica in the worker pool registers this complete Temporal contract:
 | `KalshiMarketMonitorWorkflow` | `finance-tools` | None |
 | `CryptoCarryWorkflow` | `finance-tools` | None |
 | `ThetaDataSecuritiesWorkflow` | `finance-tools` | None |
+| `ThetaDataOptionDataWorkflow` | `finance-tools` | None |
 
 The namespace defaults to `default`. Do not run workers with different workflow
 registrations on the shared queue; every `finance-tools` worker must register
@@ -56,9 +59,10 @@ docker compose up --build -d
 docker compose logs -f worker
 ```
 
-The Compose project starts PostgreSQL 18, applies Alembic migrations, and then
-starts one combined worker service. Scale that service when additional worker
-capacity or redundancy is needed:
+The Compose project starts PostgreSQL 18, starts Redis for the shared ThetaData
+request gate, applies Alembic migrations, and then starts one combined worker
+service. Redis listens on the compose network at `redis://redis:6379/0`. Scale
+the worker service when additional worker capacity or redundancy is needed:
 
 ```bash
 docker compose up -d --scale worker=2
@@ -215,12 +219,75 @@ then attaches the `securities_data` Lakekeeper warehouse through the DuckDB
 server on port 9494, creates `securities_data.securities` and the symbol
 tables when they are absent, and inserts that day's CSV. DuckDB writes the
 Iceberg data files as Parquet. A date already present in the table is not
-inserted again.
+inserted again. Both symbol-list calls take a lease from the shared ThetaData
+gate described below.
+
+## ThetaData option chains
+
+`ThetaDataOptionDataWorkflow` loads the previous trading session's option
+prices, volume, and open interest for every symbol present in both the latest
+Garage stock snapshot and the latest option-underlying snapshot.
+
+```bash
+temporal workflow start \
+  --type ThetaDataOptionDataWorkflow \
+  --task-queue finance-tools \
+  --workflow-id "thetadata-option-data-$(date +%s)"
+```
+
+The workflow asks ThetaData's calendar which session to store. The `date`
+column is that session. A weekend or full-market holiday morning finishes
+successfully and leaves the table as it is, because that morning does not
+publish the prior session's open interest.
+
+On a trading morning, before any contracts are written, one activity loads
+open interest for the highest-volume symbol stored before this trade date.
+An empty volume history uses AAPL. ThetaData returns no data when today's
+print is not up yet. A print whose timestamps fall on the trade date is the
+previous session. Either result fails that activity. Its Temporal retry
+policy waits 5 minutes and tries again, up to 60 attempts. The first attempt
+runs immediately, so the last attempt is 4 hours 55 minutes after the start.
+
+Open interest is stored as `0` when ThetaData sends zero or omits the print
+for a symbol after that probe has succeeded. That includes a contract with
+no print and a symbol whose whole chain is absent. Thin names are saved that
+way.
+
+Symbols go out in descending order of total option volume on the latest stored
+session before this trade date. Ties break alphabetically by symbol. The first
+run, with an empty volume history, is alphabetical. Each batch is appended to
+`securities_data.securities.option_data` when its checkpoints are written, and
+the per-symbol totals land in
+`securities_data.securities.option_symbol_volume`. After the full session is
+stored, the workflow writes
+`securities/option_data/YYYY-MM-DD/_COMPLETE`. The next run for that session
+reads the marker and returns the stored row count.
+
+Compose runs Redis on the compose network, and every ThetaData call in this
+repository takes a lease from it before the request. Worker replicas share the
+gate, so a long historical backfill and the morning jobs stay inside the plan's
+concurrency limit. `THETADATA_MAX_CONCURRENT` defaults to 2.
+`THETADATA_REQUESTS_PER_MINUTE` defaults to 0, which leaves the per-minute
+bucket off. `THETADATA_JOB_PRIORITIES` sets the order. A lower number runs
+first:
+
+```dotenv
+REDIS_URL=redis://redis:6379/0
+THETADATA_MAX_CONCURRENT=2
+THETADATA_REQUESTS_PER_MINUTE=0
+THETADATA_JOB_PRIORITIES=ThetaDataOptionDataWorkflow=10,ThetaDataSecuritiesWorkflow=20,ThetaDataOptionBackfillWorkflow=100
+```
+
+The daily option load runs ahead of the symbol snapshot, and both run ahead of
+a future backfill that acquires leases under the name
+`ThetaDataOptionBackfillWorkflow`. Calls already in flight finish. The morning
+job then takes the open slots.
 
 ## Temporal Schedules
 
-The following schedules run interest-rate checks hourly on the hour and the
-Kalshi, crypto-carry, and ThetaData securities jobs daily at 5:00 a.m. Eastern:
+The following schedules run interest-rate checks hourly on the hour, the
+Kalshi, crypto-carry, and ThetaData securities jobs daily at 5:00 a.m. Eastern,
+and the ThetaData option chain job daily at 7:00 a.m. Eastern:
 
 ```bash
 temporal schedule create \
@@ -256,6 +323,15 @@ temporal schedule create \
   --overlap-policy Skip \
   --workflow-id thetadata-securities-daily \
   --type ThetaDataSecuritiesWorkflow \
+  --task-queue finance-tools
+
+temporal schedule create \
+  --schedule-id thetadata-option-data-daily \
+  --cron "0 7 * * *" \
+  --time-zone "America/New_York" \
+  --overlap-policy Skip \
+  --workflow-id thetadata-option-data-daily \
+  --type ThetaDataOptionDataWorkflow \
   --task-queue finance-tools
 ```
 

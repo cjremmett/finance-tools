@@ -16,6 +16,16 @@ services:
       timeout: 5s
       retries: 20
 
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   migrate:
     build: .
     restart: "no"
@@ -32,6 +42,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
@@ -59,6 +71,13 @@ services:
       QUACK_TOKEN: ${QUACK_TOKEN:?Set QUACK_TOKEN in .env}
       ICEBERG_CATALOG_URI: ${ICEBERG_CATALOG_URI:-http://192.168.0.20:8181/catalog}
       HTTP_TIMEOUT_SECONDS: ${HTTP_TIMEOUT_SECONDS:-20}
+      REDIS_URL: redis://redis:6379/0
+      THETADATA_MAX_CONCURRENT: ${THETADATA_MAX_CONCURRENT:-2}
+      THETADATA_REQUESTS_PER_MINUTE: ${THETADATA_REQUESTS_PER_MINUTE:-0}
+      THETADATA_LEASE_SECONDS: ${THETADATA_LEASE_SECONDS:-900}
+      THETADATA_JOB_PRIORITIES: ${THETADATA_JOB_PRIORITIES:-ThetaDataOptionDataWorkflow=10,ThetaDataSecuritiesWorkflow=20,ThetaDataOptionBackfillWorkflow=100}
+      THETADATA_OPTION_BATCH_SIZE: ${THETADATA_OPTION_BATCH_SIZE:-40}
+      THETADATA_OPTION_MIN_ROWS: ${THETADATA_OPTION_MIN_ROWS:-1000}
 
 volumes:
   interest_rate_postgres_data:

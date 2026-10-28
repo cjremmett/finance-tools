@@ -21,8 +21,27 @@ SYMBOL_CSV_EXISTS = "symbol_csv_exists"
 FETCH_AND_UPLOAD_SYMBOLS = "fetch_and_upload_symbols"
 ENSURE_SECURITIES_CATALOG = "ensure_securities_catalog"
 APPEND_SYMBOLS_TO_ICEBERG = "append_symbols_to_iceberg"
+RESOLVE_OPTION_SESSION = "resolve_option_session"
+OPTION_DAY_LOADED = "option_day_loaded"
+CONFIRM_OPTION_OPEN_INTEREST = "confirm_option_open_interest"
+PLAN_OPTION_BATCHES = "plan_option_batches"
+FETCH_OPTION_BATCH = "fetch_option_batch"
+APPEND_OPTION_BATCH = "append_option_batch"
+COMPLETE_OPTION_DAY = "complete_option_day"
+
+SECURITIES_WORKFLOW = "ThetaDataSecuritiesWorkflow"
+OPTION_DATA_WORKFLOW = "ThetaDataOptionDataWorkflow"
+OPTION_BACKFILL_WORKFLOW = "ThetaDataOptionBackfillWorkflow"
+OPTION_OI_PROBE_SYMBOL = "AAPL"
+OPEN_INTEREST_NOT_READY = "OpenInterestNotReady"
+OPTION_DATA_TABLE = f"{WAREHOUSE}.{NAMESPACE}.option_data"
+OPTION_VOLUME_TABLE = f"{WAREHOUSE}.{NAMESPACE}.option_symbol_volume"
 
 _CATALOG_URI = re.compile(r"https?://[A-Za-z0-9._:-]+(?:/[A-Za-z0-9._~/-]*)?")
+_OPTION_SYMBOL = re.compile(r"^[A-Za-z0-9._-]+$")
+_PART_KEY = re.compile(
+    r"^securities/option_data/\d{4}-\d{2}-\d{2}/part-\d{4}\.csv$"
+)
 
 
 def require_dataset(dataset: str) -> str:
@@ -63,3 +82,63 @@ def eastern_fetch_date(observed_at: str) -> str:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=ZoneInfo("UTC"))
     return moment.astimezone(EASTERN).date().isoformat()
+
+
+def require_option_symbol(symbol: str) -> str:
+    if _OPTION_SYMBOL.fullmatch(symbol) is None:
+        raise ValueError(f"invalid option symbol: {symbol}")
+    return symbol
+
+
+def require_option_part_key(key: str) -> str:
+    if _PART_KEY.fullmatch(key) is None:
+        raise ValueError(f"invalid option part key: {key}")
+    return key
+
+
+def option_prefix(trade_date: str) -> str:
+    return f"{KEY_PREFIX}/option_data/{require_fetch_date(trade_date)}"
+
+
+def option_symbol_key(trade_date: str, symbol: str) -> str:
+    return (
+        f"{option_prefix(trade_date)}/symbols/{require_option_symbol(symbol)}.csv"
+    )
+
+
+def option_part_key(trade_date: str, batch_index: int) -> str:
+    if batch_index < 0:
+        raise ValueError("batch index must be >= 0")
+    return f"{option_prefix(trade_date)}/part-{batch_index:04d}.csv"
+
+
+def option_complete_key(trade_date: str) -> str:
+    return f"{option_prefix(trade_date)}/_COMPLETE"
+
+
+def snapshot_dates(keys: list[str], prefix: str) -> set[str]:
+    dates: set[str] = set()
+    for key in keys:
+        if not key.startswith(prefix):
+            continue
+        name = key[len(prefix) :]
+        if "/" in name or not name.endswith(".csv"):
+            continue
+        day = name[: -len(".csv")]
+        try:
+            require_fetch_date(day)
+        except ValueError:
+            continue
+        dates.add(day)
+    return dates
+
+
+def latest_shared_snapshot(stock_keys: list[str], option_keys: list[str]) -> str:
+    shared = snapshot_dates(stock_keys, f"{KEY_PREFIX}/stocks/") & snapshot_dates(
+        option_keys, f"{KEY_PREFIX}/option_underlyings/"
+    )
+    if not shared:
+        raise RuntimeError(
+            "no dated symbol snapshot is present for both stocks and option underlyings"
+        )
+    return max(shared)
