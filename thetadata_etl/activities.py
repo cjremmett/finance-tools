@@ -33,6 +33,7 @@ from thetadata_etl.catalog import (
     option_session_row_count,
 )
 from thetadata_etl.config import Settings
+from thetadata_etl.discord import send_discord_message
 from thetadata_etl.datasets import (
     APPEND_OPTION_BACKFILL_BATCH,
     APPEND_OPTION_BATCH,
@@ -55,6 +56,7 @@ from thetadata_etl.datasets import (
     PLAN_OPTION_BATCHES,
     RESOLVE_OPTION_SESSION,
     RESOLVE_SYMBOL_FETCH_DATE,
+    SEND_THETADATA_DISCORD,
     SYMBOL_CSV_EXISTS,
     backfill_marker_key,
     backfill_marker_symbol,
@@ -699,3 +701,13 @@ def append_option_backfill_batch_activity(request: BackfillAppendRequest) -> int
         appended,
     )
     return appended
+
+
+@activity.defn(name=SEND_THETADATA_DISCORD)
+def send_thetadata_discord_message_activity(content: str) -> None:
+    status = send_discord_message(content)
+    activity.logger.info(
+        "sent ThetaData Discord message status=%s title=%s",
+        status,
+        content.split("\n", 1)[0],
+    )

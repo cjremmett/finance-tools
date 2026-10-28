@@ -90,6 +90,7 @@ class Settings:
     thetadata_job_priorities: dict[str, int]
     thetadata_option_batch_size: int
     thetadata_option_min_rows: int
+    discord_webhook_url: str
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -130,4 +131,5 @@ class Settings:
             thetadata_option_min_rows=_integer(
                 "THETADATA_OPTION_MIN_ROWS", 1000, minimum=0
             ),
+            discord_webhook_url=_required("ETL_PIPELINE_DISCORD_WEBHOOK"),
         )

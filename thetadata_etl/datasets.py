@@ -31,6 +31,7 @@ COMPLETE_OPTION_DAY = "complete_option_day"
 PLAN_OPTION_BACKFILL = "plan_option_backfill"
 FETCH_OPTION_BACKFILL_SYMBOL = "fetch_option_backfill_symbol"
 APPEND_OPTION_BACKFILL_BATCH = "append_option_backfill_batch"
+SEND_THETADATA_DISCORD = "send_thetadata_discord_message"
 
 SECURITIES_WORKFLOW = "ThetaDataSecuritiesWorkflow"
 OPTION_DATA_WORKFLOW = "ThetaDataOptionDataWorkflow"

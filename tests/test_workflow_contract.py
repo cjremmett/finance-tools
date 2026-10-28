@@ -47,6 +47,7 @@ from thetadata_etl.activities import (
     plan_option_batches_activity,
     resolve_option_session_activity,
     resolve_symbol_fetch_date_activity,
+    send_thetadata_discord_message_activity,
     symbol_csv_exists_activity,
 )
 from thetadata_etl import worker as theta_worker
@@ -141,6 +142,7 @@ def test_combined_worker_registers_all_jobs() -> None:
         plan_option_backfill_activity,
         fetch_option_backfill_symbol_activity,
         append_option_backfill_batch_activity,
+        send_thetadata_discord_message_activity,
     )
 
 
@@ -150,9 +152,10 @@ def test_thetadata_worker_registers_the_backfill() -> None:
         ThetaDataOptionDataWorkflow,
         ThetaDataOptionBackfillWorkflow,
     )
-    assert theta_worker.ACTIVITIES[-3:] == (
+    assert theta_worker.ACTIVITIES[-4:] == (
         plan_option_backfill_activity,
         fetch_option_backfill_symbol_activity,
         append_option_backfill_batch_activity,
+        send_thetadata_discord_message_activity,
     )
-    assert len(theta_worker.ACTIVITIES) == 15
+    assert len(theta_worker.ACTIVITIES) == 16

@@ -212,7 +212,14 @@ THETADATA_API_KEY=your-thetadata-api-key
 GARAGE_ACCESS_KEY_ID=your-garage-access-key
 GARAGE_SECRET_ACCESS_KEY=your-garage-secret-key
 QUACK_TOKEN=your-quack-token
+ETL_PIPELINE_DISCORD_WEBHOOK=https://discord.com/api/webhooks/...
 ```
+
+The securities snapshot, the daily option sync, and the option backfill each
+post a status message to that webhook when the run finishes. The backfill
+also posts when it starts work and when it finds nothing to do. A failed run
+posts the reason. A weekend or holiday morning for the option sync posts the
+skip reason.
 
 Each run uses the America/New_York calendar day. For `stocks` and
 `option_underlyings`, it checks Garage for

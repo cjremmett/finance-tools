@@ -62,7 +62,26 @@ from thetadata_etl.datasets import (
     require_option_part_key,
     require_option_symbol,
 )
-from thetadata_etl.models import BackfillSymbolRequest, SessionResolution
+from thetadata_etl.discord import (
+    DISCORD_CONTENT_LIMIT,
+    build_backfill_done_message,
+    build_backfill_idle_message,
+    build_backfill_started_message,
+    build_failure_message,
+    build_option_message,
+    build_securities_message,
+    failure_reason,
+    send_discord_message,
+)
+from thetadata_etl.models import (
+    BackfillResult,
+    BackfillState,
+    BackfillSymbolRequest,
+    DatasetResult,
+    OptionWorkflowResult,
+    SessionResolution,
+    WorkflowResult,
+)
 from thetadata_etl.options import (
     OPTION_COLUMNS,
     build_option_frame,
@@ -633,6 +652,9 @@ def _required_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GARAGE_SECRET_ACCESS_KEY", "secret")
     monkeypatch.setenv("QUACK_TOKEN", "token")
     monkeypatch.setenv("REDIS_URL", "redis://redis:6379/0")
+    monkeypatch.setenv(
+        "ETL_PIPELINE_DISCORD_WEBHOOK", "https://discord.test/webhook"
+    )
     for name in (
         "THETADATA_JOB_PRIORITIES",
         "THETADATA_MAX_CONCURRENT",
@@ -1263,3 +1285,228 @@ def _install_backfill_fakes(monkeypatch, store, client, gate) -> None:
     monkeypatch.setattr(activities, "garage_store", lambda _settings: store)
     monkeypatch.setattr(activities, "_thetadata_gate", gate_cm)
     monkeypatch.setattr(activities, "_theta_client", lambda _api_key: client)
+
+
+def _activity_failure(activity_type: str, message: str) -> ActivityError:
+    error = ActivityError(
+        "Activity task failed",
+        scheduled_event_id=1,
+        started_event_id=2,
+        identity="worker",
+        activity_type=activity_type,
+        activity_id="1",
+        retry_state=None,
+    )
+    error.__cause__ = ApplicationError(message, type="DataError")
+    return error
+
+
+def _backfill_state() -> BackfillState:
+    return BackfillState(
+        window_start="2025-10-27",
+        window_end="2026-10-24",
+        excluded="2026-10-27",
+        sessions=["2025-10-27", "2025-10-28"],
+        symbols=["AAPL", "MSFT"],
+        next_index=0,
+        batch_size=40,
+        symbol_snapshot_date="2026-10-27",
+        fetched_sessions=0,
+        appended_rows=0,
+        failed=[],
+        covered=4,
+    )
+
+
+def _backfill_outcome(**overrides: object) -> BackfillResult:
+    values: dict[str, object] = {
+        "workflow_run_id": "run-1",
+        "window_start": "2025-10-27",
+        "window_end": "2026-10-24",
+        "excluded": "2026-10-27",
+        "symbol_snapshot_date": "2026-10-27",
+        "covered": 4,
+        "completed": 2,
+        "failed": [],
+        "fetched_sessions": 10,
+        "appended_rows": 20,
+    }
+    values.update(overrides)
+    return BackfillResult(**values)  # type: ignore[arg-type]
+
+
+def test_securities_message_reports_both_symbol_counts() -> None:
+    message = build_securities_message(
+        WorkflowResult(
+            workflow_run_id="run-sec",
+            fetch_date="2026-10-28",
+            datasets=[
+                DatasetResult("stocks", fetched=True, appended=True, row_count=26927),
+                DatasetResult(
+                    "option_underlyings",
+                    fetched=False,
+                    appended=False,
+                    row_count=15831,
+                ),
+            ],
+        )
+    )
+    assert "2026-10-28" in message
+    assert "26,927 unique symbols (fetched from ThetaData, appended)" in message
+    assert "15,831 unique symbols (reused Garage CSV, already stored)" in message
+    assert "Stocks" in message
+    assert "Option underlyings" in message
+    assert "run-sec" in message
+    assert len(message) <= DISCORD_CONTENT_LIMIT
+
+
+def test_option_messages_cover_skip_reload_and_fresh_load() -> None:
+    skipped = build_option_message(
+        OptionWorkflowResult(
+            workflow_run_id="run-skip",
+            trade_date="",
+            skipped=True,
+            skip_reason=SKIP_CLOSED_MORNING,
+            symbol_snapshot_date="",
+            underlying_count=0,
+            fetched_count=0,
+            appended_rows=0,
+            row_count=0,
+        )
+    )
+    assert skipped.startswith("📈 **ThetaData option sync** skipped")
+    assert SKIP_CLOSED_MORNING in skipped
+    assert "run-skip" in skipped
+
+    stored = build_option_message(
+        OptionWorkflowResult(
+            workflow_run_id="run-stored",
+            trade_date="2026-10-27",
+            skipped=False,
+            skip_reason="",
+            symbol_snapshot_date="",
+            underlying_count=0,
+            fetched_count=0,
+            appended_rows=0,
+            row_count=1200,
+        )
+    )
+    assert "2026-10-27" in stored
+    assert "Session already stored (1,200 rows)" in stored
+    assert "ThetaData was not called" in stored
+
+    loaded = build_option_message(
+        OptionWorkflowResult(
+            workflow_run_id="run-loaded",
+            trade_date="2026-10-27",
+            skipped=False,
+            skip_reason="",
+            symbol_snapshot_date="2026-10-27",
+            underlying_count=10528,
+            fetched_count=40,
+            appended_rows=250000,
+            row_count=250000,
+        )
+    )
+    assert "Underlyings: 10,528" in loaded
+    assert "Symbols checkpointed: 40" in loaded
+    assert "Rows appended: 250,000" in loaded
+    assert "Stored rows: 250,000" in loaded
+    assert "Snapshot: 2026-10-27" in loaded
+
+
+def test_backfill_messages_distinguish_start_idle_and_finish() -> None:
+    started = build_backfill_started_message(_backfill_state(), "run-start")
+    assert started.startswith("📈 **ThetaData option backfill** started")
+    assert "Symbols to backfill: 2" in started
+    assert "2 sessions" in started
+    assert "Already covered: 4" in started
+    assert "run-start" in started
+
+    idle = build_backfill_idle_message(_backfill_outcome(completed=0))
+    assert "found nothing to do" in idle
+    assert "Symbols already covered: 4" in idle
+    assert "Excluded latest session: 2026-10-27" in idle
+    assert "finished" not in idle
+
+    done = build_backfill_done_message(
+        _backfill_outcome(failed=["ZZZ", "AAA"], completed=1)
+    )
+    assert "finished" in done
+    assert "Symbols completed: 1" in done
+    assert "Symbols failed: 2" in done
+    assert "Sessions fetched: 10" in done
+    assert "Rows appended: 20" in done
+    assert "Failed: ZZZ, AAA" in done
+    assert len(done) <= DISCORD_CONTENT_LIMIT
+
+
+def test_backfill_done_message_truncates_failed_symbols() -> None:
+    symbols = [f"SYMBOL{index:04d}" for index in range(400)]
+    message = build_backfill_done_message(_backfill_outcome(failed=symbols))
+    assert len(message) <= DISCORD_CONTENT_LIMIT
+    assert "and " in message
+    assert "more" in message
+    assert "SYMBOL0000" in message
+    assert "SYMBOL0399" not in message
+
+
+def test_failure_reason_unwraps_the_activity_cause() -> None:
+    reason = failure_reason(
+        _activity_failure("fetch_option_backfill_symbol", "ThetaData rejected the chain")
+    )
+    assert reason == (
+        "fetch_option_backfill_symbol: DataError: ThetaData rejected the chain"
+    )
+    assert "Activity task failed" not in reason
+
+
+def test_failure_message_keeps_the_run_id_and_stays_within_discord() -> None:
+    message = build_failure_message(
+        "ThetaData option backfill",
+        "run-fail",
+        "x" * 5000,
+        given_up=3,
+    )
+    assert message.startswith("⚠️ **ThetaData option backfill failed**")
+    assert "Symbols already given up: 3" in message
+    assert "run-fail" in message
+    assert len(message) <= DISCORD_CONTENT_LIMIT
+
+
+def test_settings_require_etl_discord_webhook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _required_settings(monkeypatch)
+    monkeypatch.delenv("ETL_PIPELINE_DISCORD_WEBHOOK", raising=False)
+    with pytest.raises(RuntimeError, match="ETL_PIPELINE_DISCORD_WEBHOOK"):
+        Settings.from_env()
+
+
+def test_send_discord_message_posts_the_configured_webhook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _required_settings(monkeypatch)
+    captured: dict[str, object] = {}
+
+    class _Response:
+        status_code = 204
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def post(url: str, **kwargs: object) -> _Response:
+        captured["url"] = url
+        captured["kwargs"] = kwargs
+        return _Response()
+
+    monkeypatch.setattr("thetadata_etl.discord.requests.post", post)
+    assert send_discord_message("hello") == 204
+    assert captured["url"] == "https://discord.test/webhook"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["params"] == {"wait": "true"}
+    assert kwargs["json"] == {
+        "content": "hello",
+        "allowed_mentions": {"parse": []},
+    }
