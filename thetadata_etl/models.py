@@ -80,3 +80,75 @@ class OptionWorkflowResult:
     fetched_count: int
     appended_rows: int
     row_count: int
+
+
+@dataclass(frozen=True)
+class Coverage:
+    start: str
+    through: str
+
+
+@dataclass(frozen=True)
+class BackfillPlan:
+    window_start: str
+    window_end: str
+    excluded: str
+    sessions: list[str]
+    symbols: list[str]
+    symbol_snapshot_date: str
+    batch_size: int
+    covered: int
+
+
+@dataclass
+class BackfillState:
+    window_start: str
+    window_end: str
+    excluded: str
+    sessions: list[str]
+    symbols: list[str]
+    next_index: int
+    batch_size: int
+    symbol_snapshot_date: str
+    fetched_sessions: int
+    appended_rows: int
+    failed: list[str]
+    covered: int
+
+
+@dataclass(frozen=True)
+class BackfillSymbolRequest:
+    symbol: str
+    sessions: list[str]
+    excluded: str
+    window_start: str
+    window_end: str
+
+
+@dataclass(frozen=True)
+class BackfillSymbolResult:
+    symbol: str
+    fetched_sessions: int
+
+
+@dataclass(frozen=True)
+class BackfillAppendRequest:
+    symbols: list[str]
+    sessions: list[str]
+    window_start: str
+    window_end: str
+    batch_index: int
+
+
+@dataclass(frozen=True)
+class BackfillResult:
+    workflow_run_id: str
+    window_start: str
+    window_end: str
+    excluded: str
+    symbol_snapshot_date: str
+    covered: int
+    completed: int
+    failed: list[str]
+    fetched_sessions: int
+    appended_rows: int

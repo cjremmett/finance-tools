@@ -131,3 +131,25 @@ def test_redis_script_uses_the_same_grant_order() -> None:
     assert "thetadata:waiters" in _GATE_SCRIPT
     assert "thetadata:leases" in _GATE_SCRIPT
     assert "thetadata:inflight" in _GATE_SCRIPT
+    assert "redis.call('ZADD', leases, now + lease_ms, request_id)" in _GATE_SCRIPT
+
+
+def test_extended_lease_keeps_the_slot_past_its_original_deadline() -> None:
+    now = {"t": 0.0}
+    gate = MemoryGate(
+        max_concurrent=1,
+        requests_per_minute=0,
+        lease_seconds=10,
+        priorities=PRIORITIES,
+        clock=lambda: now["t"],
+    )
+    held = gate.acquire("backfill", block=False)
+    assert held is not None
+    now["t"] = 9
+    gate.extend(held)
+    now["t"] = 18
+    assert gate.acquire("daily", block=False) is None
+    now["t"] = 19
+    granted = gate.acquire("daily", block=False)
+    assert granted is not None
+    assert granted != held

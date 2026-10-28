@@ -12,6 +12,7 @@ from thetadata_etl.datasets import (
     qualified_table,
     require_catalog_uri,
     require_dataset,
+    require_backfill_part_key,
     require_fetch_date,
     require_option_part_key,
     require_option_symbol,
@@ -176,6 +177,75 @@ FROM read_csv(
 ){_skip_clause(skip_symbols)}
 GROUP BY {symbol}, {day}
 """.strip()
+
+
+def backfill_pairs_sql(symbols: list[str], start: str, end: str) -> str:
+    relation = OPTION_DATA_TABLE
+    quoted = _symbol_list(symbols)
+    window = _date_window(start, end)
+    return (
+        f"SELECT DISTINCT symbol, {_sql_name('date')} FROM {relation} "
+        f"WHERE symbol IN ({quoted}) AND {window}"
+    )
+
+
+def backfill_insert_sql(part_key: str) -> str:
+    key = require_backfill_part_key(part_key)
+    columns = ", ".join(_sql_name(name) for name in OPTION_COLUMNS)
+    csv_columns = ", ".join(f"csv.{_sql_name(name)}" for name in OPTION_COLUMNS)
+    return f"""
+INSERT INTO {OPTION_DATA_TABLE} ({columns})
+SELECT {csv_columns}
+FROM read_csv(
+    's3://securities-data/{key}',
+    header = true,
+    columns = {_option_csv_columns()}
+) AS csv
+ANTI JOIN {OPTION_DATA_TABLE} AS existing
+    ON existing.{_sql_name('symbol')} = csv.{_sql_name('symbol')}
+    AND existing.{_sql_name('date')} = csv.{_sql_name('date')}
+""".strip()
+
+
+def backfill_volume_sql(part_key: str) -> str:
+    key = require_backfill_part_key(part_key)
+    symbol = _sql_name("symbol")
+    day = _sql_name("date")
+    volume = _sql_name("volume")
+    total = _sql_name("total_volume")
+    return f"""
+INSERT INTO {OPTION_VOLUME_TABLE} ({symbol}, {day}, {total})
+SELECT csv.{symbol}, csv.{day}, CAST(sum(csv.{volume}) AS BIGINT) AS {total}
+FROM read_csv(
+    's3://securities-data/{key}',
+    header = true,
+    columns = {_option_csv_columns()}
+) AS csv
+ANTI JOIN {OPTION_VOLUME_TABLE} AS existing
+    ON existing.{symbol} = csv.{symbol} AND existing.{day} = csv.{day}
+GROUP BY csv.{symbol}, csv.{day}
+""".strip()
+
+
+def backfill_count_sql(symbols: list[str], start: str, end: str) -> str:
+    quoted = _symbol_list(symbols)
+    return (
+        f"SELECT count(*) FROM {OPTION_DATA_TABLE} "
+        f"WHERE symbol IN ({quoted}) AND {_date_window(start, end)}"
+    )
+
+
+def _symbol_list(symbols: list[str]) -> str:
+    if not symbols:
+        raise ValueError("symbol list is empty")
+    return ", ".join(f"'{require_option_symbol(symbol)}'" for symbol in symbols)
+
+
+def _date_window(start: str, end: str) -> str:
+    first = require_fetch_date(start)
+    last = require_fetch_date(end)
+    day = _sql_name("date")
+    return f"{day} BETWEEN DATE '{first}' AND DATE '{last}'"
 
 
 def _require_option_table(table: str) -> str:
@@ -357,6 +427,66 @@ def append_option_csv(
         )
     finally:
         client.close()
+
+
+def append_backfill_csv(
+    settings: Settings,
+    part_key: str,
+    symbols: list[str],
+    window_start: str,
+    window_end: str,
+) -> int:
+    client = QuackCatalog(settings.quack_uri, settings.quack_token)
+    try:
+        return append_backfill_part(
+            client,
+            settings.iceberg_catalog_uri,
+            part_key,
+            symbols,
+            window_start,
+            window_end,
+        )
+    finally:
+        client.close()
+
+
+def loaded_backfill_pairs(
+    client: QuackCatalog,
+    symbols: list[str],
+    window_start: str,
+    window_end: str,
+) -> set[tuple[str, str]]:
+    rows = client.execute(backfill_pairs_sql(symbols, window_start, window_end))
+    pairs: set[tuple[str, str]] = set()
+    for row in rows:
+        symbol = require_option_symbol(str(row[0]))
+        raw = row[1]
+        if hasattr(raw, "isoformat"):
+            day = raw.isoformat()
+        else:
+            day = str(raw)
+        pairs.add((symbol, require_fetch_date(day[:10])))
+    return pairs
+
+
+def append_backfill_part(
+    client: QuackCatalog,
+    catalog_uri: str,
+    part_key: str,
+    symbols: list[str],
+    window_start: str,
+    window_end: str,
+) -> int:
+    key = require_backfill_part_key(part_key)
+    validated = [require_option_symbol(symbol) for symbol in symbols]
+    start = require_fetch_date(window_start)
+    end = require_fetch_date(window_end)
+    ensure_option_tables(client, catalog_uri)
+    before = client.scalar(backfill_count_sql(validated, start, end))
+    client.execute(backfill_insert_sql(key))
+    client.execute(backfill_volume_sql(key))
+    after = client.scalar(backfill_count_sql(validated, start, end))
+    return after - before
 
 
 def latest_option_volumes(settings: Settings, trade_date: str) -> dict[str, int]:

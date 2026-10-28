@@ -28,10 +28,16 @@ PLAN_OPTION_BATCHES = "plan_option_batches"
 FETCH_OPTION_BATCH = "fetch_option_batch"
 APPEND_OPTION_BATCH = "append_option_batch"
 COMPLETE_OPTION_DAY = "complete_option_day"
+PLAN_OPTION_BACKFILL = "plan_option_backfill"
+FETCH_OPTION_BACKFILL_SYMBOL = "fetch_option_backfill_symbol"
+APPEND_OPTION_BACKFILL_BATCH = "append_option_backfill_batch"
 
 SECURITIES_WORKFLOW = "ThetaDataSecuritiesWorkflow"
 OPTION_DATA_WORKFLOW = "ThetaDataOptionDataWorkflow"
 OPTION_BACKFILL_WORKFLOW = "ThetaDataOptionBackfillWorkflow"
+BACKFILL_SYMBOL_FAILED = "BackfillSymbolFailed"
+BACKFILL_CHUNK_SESSIONS = 5
+BACKFILL_DATA_ATTEMPTS = 5
 OPTION_OI_PROBE_SYMBOL = "AAPL"
 OPEN_INTEREST_NOT_READY = "OpenInterestNotReady"
 OPTION_DATA_TABLE = f"{WAREHOUSE}.{NAMESPACE}.option_data"
@@ -41,6 +47,12 @@ _CATALOG_URI = re.compile(r"https?://[A-Za-z0-9._:-]+(?:/[A-Za-z0-9._~/-]*)?")
 _OPTION_SYMBOL = re.compile(r"^[A-Za-z0-9._-]+$")
 _PART_KEY = re.compile(
     r"^securities/option_data/\d{4}-\d{2}-\d{2}/part-\d{4}\.csv$"
+)
+_BACKFILL_PART_KEY = re.compile(
+    r"^securities/option_backfill/parts/\d{4}-\d{2}-\d{2}/part-\d{4}\.csv$"
+)
+_BACKFILL_MARKER_KEY = re.compile(
+    r"^securities/option_backfill/(?P<symbol>[A-Za-z0-9._-]+)\.json$"
 )
 
 
@@ -114,6 +126,32 @@ def option_part_key(trade_date: str, batch_index: int) -> str:
 
 def option_complete_key(trade_date: str) -> str:
     return f"{option_prefix(trade_date)}/_COMPLETE"
+
+
+def backfill_marker_key(symbol: str) -> str:
+    return f"{KEY_PREFIX}/option_backfill/{require_option_symbol(symbol)}.json"
+
+
+def backfill_marker_symbol(key: str) -> str | None:
+    match = _BACKFILL_MARKER_KEY.fullmatch(key)
+    if match is None:
+        return None
+    return match.group("symbol")
+
+
+def backfill_part_key(window_end: str, batch_index: int) -> str:
+    if batch_index < 0:
+        raise ValueError("batch index must be >= 0")
+    return (
+        f"{KEY_PREFIX}/option_backfill/parts/"
+        f"{require_fetch_date(window_end)}/part-{batch_index:04d}.csv"
+    )
+
+
+def require_backfill_part_key(key: str) -> str:
+    if _BACKFILL_PART_KEY.fullmatch(key) is None:
+        raise ValueError(f"invalid backfill part key: {key}")
+    return key
 
 
 def snapshot_dates(keys: list[str], prefix: str) -> set[str]:

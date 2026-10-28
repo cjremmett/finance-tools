@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 
 import polars as pl
 
@@ -185,11 +186,12 @@ def load_option_chain(
     oi_end_date: date,
     heartbeat: Callable[[], None] | None = None,
     as_of: date | None = None,
+    job_name: str = OPTION_DATA_WORKFLOW,
 ) -> pl.DataFrame:
     from thetadata.errors import NoDataFoundError
 
     checked = require_option_symbol(symbol)
-    with gate.lease(OPTION_DATA_WORKFLOW, heartbeat=heartbeat):
+    with gate.lease(job_name, heartbeat=heartbeat):
         try:
             end_of_day = client.option_history_eod(
                 trade_date, trade_date, checked, "*"
@@ -203,7 +205,7 @@ def load_option_chain(
         )
     if end_of_day.height == 0:
         return empty_option_frame()
-    with gate.lease(OPTION_DATA_WORKFLOW, heartbeat=heartbeat):
+    with gate.lease(job_name, heartbeat=heartbeat):
         try:
             open_interest = request_open_interest(
                 client, checked, oi_end_date, as_of=as_of
@@ -356,3 +358,309 @@ def _kept_open_interest(
         pl.col("strike").cast(pl.Float64).round(4).alias("_strike_key"),
         pl.col("open_interest").cast(pl.Int64, strict=False).alias("open_interest"),
     )
+
+
+@dataclass
+class RangeSplit:
+    frames: dict[date, pl.DataFrame]
+    empty_days: list[date]
+    unresolved: list[list[date]]
+
+
+def is_transient(error: BaseException) -> bool:
+    """True when the call should be retried without counting as a bad symbol."""
+    name = type(error).__name__
+    if name in {
+        "ConnectionError",
+        "TimeoutError",
+        "ConnectionResetError",
+        "OSError",
+        "BrokenPipeError",
+    }:
+        return True
+    module = type(error).__module__
+    if module.startswith(("redis", "botocore", "urllib3")):
+        return True
+    if name != "RpcError":
+        return False
+    code = getattr(error, "code", None)
+    status = code() if callable(code) else code
+    status_name = getattr(status, "name", "")
+    return status_name in {
+        "UNAVAILABLE",
+        "DEADLINE_EXCEEDED",
+        "RESOURCE_EXHAUSTED",
+        "ABORTED",
+    }
+
+
+def split_backfill_eod(
+    sessions: list[date], frame: pl.DataFrame
+) -> RangeSplit | None:
+    """Split a multi-day EOD frame into settled sessions and an unresolved tail.
+
+    Holes strictly between the first and last returned session are empty
+    chains. Sessions before the first row, and the tail after the last row,
+    stay unresolved so a truncated response is not stored as empty days.
+    """
+    if (
+        not sessions
+        or frame.height == 0
+        or "created" not in frame.columns
+    ):
+        return None
+    session_expr = _session_date_expr(frame, "created")
+    if session_expr is None:
+        return None
+    labeled = frame.with_columns(session_expr.alias("_session"))
+    requested = set(sessions)
+    labeled = labeled.filter(
+        pl.col("_session").is_not_null() & pl.col("_session").is_in(list(requested))
+    )
+    if labeled.height == 0:
+        return None
+    present = set(labeled["_session"].unique().to_list())
+    first = min(present)
+    last = max(present)
+    frames: dict[date, pl.DataFrame] = {}
+    empty_days: list[date] = []
+    leading: list[date] = []
+    tail: list[date] = []
+    for day in sessions:
+        if day < first:
+            leading.append(day)
+            continue
+        if day > last:
+            tail.append(day)
+            continue
+        if day in present:
+            frames[day] = labeled.filter(pl.col("_session") == day).drop("_session")
+        else:
+            empty_days.append(day)
+    unresolved = [run for run in (leading, tail) if run]
+    return RangeSplit(frames=frames, empty_days=empty_days, unresolved=unresolved)
+
+
+def open_interest_for_publication(
+    frame: pl.DataFrame | None, publication: date
+) -> pl.DataFrame | None:
+    if (
+        frame is None
+        or frame.height == 0
+        or "timestamp" not in frame.columns
+    ):
+        return None
+    session_expr = _session_date_expr(frame, "timestamp")
+    if session_expr is None:
+        return None
+    kept = frame.with_columns(session_expr.alias("_published")).filter(
+        pl.col("_published") == publication
+    )
+    if kept.height == 0:
+        return None
+    return kept.drop("_published")
+
+
+class _DataFailures:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.count = 0
+
+
+def load_backfill_sessions(
+    client: object,
+    gate: object,
+    symbol: str,
+    sessions: list[date],
+    publication: dict[date, date],
+    *,
+    job_name: str,
+    heartbeat: Callable[[], None] | None = None,
+    as_of: date | None = None,
+    data_attempts: int = 5,
+) -> dict[date, pl.DataFrame]:
+    """Load every session in `sessions`, splitting ranges that come back short."""
+    from thetadata.errors import NoDataFoundError
+    from temporalio.exceptions import ApplicationError
+
+    from thetadata_etl.datasets import BACKFILL_SYMBOL_FAILED
+
+    failures = _DataFailures(data_attempts)
+    loaded: dict[date, pl.DataFrame] = {}
+
+    def note(error: BaseException) -> None:
+        if is_transient(error):
+            raise error
+        failures.count += 1
+        if failures.count >= failures.limit:
+            raise ApplicationError(
+                f"backfill failed for {symbol}: {error}",
+                type=BACKFILL_SYMBOL_FAILED,
+                non_retryable=True,
+            ) from error
+
+    def load(chunk: list[date]) -> None:
+        if not chunk:
+            return
+        if len(chunk) == 1:
+            day = chunk[0]
+            while day not in loaded:
+                try:
+                    loaded[day] = load_option_chain(
+                        client,
+                        gate,
+                        symbol,
+                        day,
+                        publication[day],
+                        heartbeat,
+                        as_of=as_of,
+                        job_name=job_name,
+                    )
+                except ApplicationError:
+                    raise
+                except Exception as error:
+                    note(error)
+            return
+        checked = require_option_symbol(symbol)
+        try:
+            with gate.lease(job_name, heartbeat=heartbeat):
+                end_of_day = client.option_history_eod(
+                    chunk[0], chunk[-1], checked, "*"
+                )
+        except NoDataFoundError:
+            for day in chunk:
+                loaded[day] = empty_option_frame()
+            return
+        except ApplicationError:
+            raise
+        except Exception as error:
+            if is_transient(error):
+                raise
+            midpoint = len(chunk) // 2
+            load(chunk[:midpoint])
+            load(chunk[midpoint:])
+            return
+        if not isinstance(end_of_day, pl.DataFrame) or end_of_day.height == 0:
+            midpoint = len(chunk) // 2
+            load(chunk[:midpoint])
+            load(chunk[midpoint:])
+            return
+        split = split_backfill_eod(chunk, end_of_day)
+        if split is None:
+            midpoint = len(chunk) // 2
+            load(chunk[:midpoint])
+            load(chunk[midpoint:])
+            return
+        try:
+            interest = _range_open_interest(
+                client,
+                gate,
+                checked,
+                split.frames,
+                publication,
+                job_name=job_name,
+                heartbeat=heartbeat,
+                as_of=as_of,
+            )
+            for day, day_frame in split.frames.items():
+                loaded[day] = build_option_frame(
+                    day_frame,
+                    open_interest_for_publication(interest, publication[day]),
+                    day,
+                    checked,
+                )
+        except ApplicationError:
+            raise
+        except Exception as error:
+            note(error)
+            load(chunk)
+            return
+        for day in split.empty_days:
+            loaded[day] = empty_option_frame()
+        for run in split.unresolved:
+            load(run)
+
+    load(sessions)
+    missing = [day for day in sessions if day not in loaded]
+    if missing:
+        raise RuntimeError(
+            f"backfill for {symbol} left {missing[0].isoformat()} unloaded"
+        )
+    return loaded
+
+
+def _range_open_interest(
+    client: object,
+    gate: object,
+    symbol: str,
+    frames: dict[date, pl.DataFrame],
+    publication: dict[date, date],
+    *,
+    job_name: str,
+    heartbeat: Callable[[], None] | None,
+    as_of: date | None,
+) -> pl.DataFrame | None:
+    from thetadata.errors import NoDataFoundError
+
+    if not frames:
+        return None
+    publications = sorted({publication[day] for day in frames})
+    history_as_of = as_of or (publications[-1] + timedelta(days=1))
+    try:
+        with gate.lease(job_name, heartbeat=heartbeat):
+            if len(publications) == 1:
+                fetched = request_open_interest(
+                    client, symbol, publications[0], as_of=history_as_of
+                )
+            else:
+                fetched = client.option_history_open_interest(
+                    symbol,
+                    "*",
+                    start_date=publications[0],
+                    end_date=publications[-1],
+                )
+    except NoDataFoundError:
+        return None
+    except Exception as error:
+        if is_transient(error) or len(publications) == 1:
+            raise
+        pieces: list[pl.DataFrame] = []
+        for published in publications:
+            try:
+                with gate.lease(job_name, heartbeat=heartbeat):
+                    piece = request_open_interest(
+                        client, symbol, published, as_of=history_as_of
+                    )
+            except NoDataFoundError:
+                continue
+            if isinstance(piece, pl.DataFrame) and piece.height > 0:
+                pieces.append(piece)
+        if not pieces:
+            return None
+        return pl.concat(pieces, how="diagonal_relaxed")
+    if not isinstance(fetched, pl.DataFrame):
+        raise RuntimeError(
+            f"ThetaData open interest response for {symbol} returned "
+            f"{type(fetched).__name__}"
+        )
+    if fetched.height == 0:
+        return None
+    return fetched
+
+
+def _session_date_expr(frame: pl.DataFrame, column: str) -> pl.Expr | None:
+    if column not in frame.columns:
+        return None
+    dtype = frame.schema[column]
+    col = pl.col(column)
+    if isinstance(dtype, pl.Datetime) and dtype.time_zone:
+        return col.dt.convert_time_zone(EASTERN.key).dt.date()
+    if isinstance(dtype, pl.Datetime):
+        return col.dt.replace_time_zone(EASTERN.key).dt.date()
+    if dtype == pl.String or dtype == pl.Utf8:
+        return (
+            col.str.to_datetime(strict=False)
+            .dt.replace_time_zone(EASTERN.key)
+            .dt.date()
+        )
+    return None

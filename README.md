@@ -14,6 +14,8 @@ This repository contains a shared Temporal worker pool that monitors:
   in Garage and appended to the `securities_data` Iceberg warehouse.
 - The previous session's option prices, volume, and open interest for symbols
   that have both a stock listing and an options chain.
+- One year of that same option history for those symbols, excluding the latest
+  session, which the daily option load still owns.
 
 The worker process registers every workflow and all of their activities on the
 single `finance-tools` task queue. The interest-rate workflow runs its five
@@ -46,6 +48,7 @@ Every replica in the worker pool registers this complete Temporal contract:
 | `CryptoCarryWorkflow` | `finance-tools` | None |
 | `ThetaDataSecuritiesWorkflow` | `finance-tools` | None |
 | `ThetaDataOptionDataWorkflow` | `finance-tools` | None |
+| `ThetaDataOptionBackfillWorkflow` | `finance-tools` | None |
 
 The namespace defaults to `default`. Do not run workers with different workflow
 registrations on the shared queue; every `finance-tools` worker must register
@@ -264,6 +267,47 @@ stored, the workflow writes
 `securities/option_data/YYYY-MM-DD/_COMPLETE`. The next run for that session
 reads the marker and returns the stored row count.
 
+## ThetaData option history backfill
+
+`ThetaDataOptionBackfillWorkflow` fills price, volume, and open interest for
+every symbol in that same stock and option-underlying join. The window is the
+trading sessions from one calendar year before the latest session, up to but
+not including that latest session. Weekends and full closures are skipped.
+Early closes are included. The latest session stays with the 7:00 a.m. job.
+
+```bash
+temporal workflow start \
+  --type ThetaDataOptionBackfillWorkflow \
+  --task-queue finance-tools \
+  --workflow-id thetadata-option-backfill-daily
+```
+
+Each symbol is requested a few sessions at a time. A range that comes back
+short, or that ThetaData rejects, is split, and a single session uses the same
+loader as the daily job. Empty chains are stored as empty checkpoints. Rows
+already in `option_data` for that symbol and date are not inserted again.
+`option_symbol_volume` gets the same daily totals. A symbol is finished only
+when every session in the window has a checkpoint. The next morning fills
+symbols that are new to the join and any session the daily job missed once
+that session is no longer the latest one. A morning with nothing missing does
+no ThetaData work.
+
+Progress is the per-session checkpoint under
+`securities/option_data/YYYY-MM-DD/symbols/` plus
+`securities/option_backfill/{symbol}.json` written after the Iceberg append.
+The workflow passes its place through `continue-as-new`. Stopping this
+compose, or restarting the worker, leaves the Temporal run open so it
+continues when the worker is back. Redis does not store that progress.
+Terminating the workflow and starting it again reads the checkpoints and
+continues from the symbol-days that are still missing. A symbol that still
+fails after five data attempts is left unmarked and retried on the next run.
+
+The backfill acquires the shared gate as `ThetaDataOptionBackfillWorkflow`
+(priority 100). While a morning job is waiting, the backfill parks between
+calls.
+
+## Temporal Schedules
+
 Compose runs Redis on the compose network, and every ThetaData call in this
 repository takes a lease from it before the request. Worker replicas share the
 gate, so a long historical backfill and the morning jobs stay inside the plan's
@@ -280,15 +324,18 @@ THETADATA_JOB_PRIORITIES=ThetaDataOptionDataWorkflow=10,ThetaDataSecuritiesWorkf
 ```
 
 The daily option load runs ahead of the symbol snapshot, and both run ahead of
-a future backfill that acquires leases under the name
 `ThetaDataOptionBackfillWorkflow`. Calls already in flight finish. The morning
-job then takes the open slots.
+job then takes the open slots. A backfill call keeps its lease until the
+response returns, refreshing the deadline so a slow week does not lose the slot
+while it is still running.
 
 ## Temporal Schedules
 
 The following schedules run interest-rate checks hourly on the hour, the
 Kalshi, crypto-carry, and ThetaData securities jobs daily at 5:00 a.m. Eastern,
-and the ThetaData option chain job daily at 7:00 a.m. Eastern:
+the ThetaData option chain job daily at 7:00 a.m. Eastern, and the option
+history backfill daily at 8:30 a.m. Eastern. Overlap `Skip` on the backfill
+leaves an 8:30 trigger alone while an earlier backfill run is still open:
 
 ```bash
 temporal schedule create \
@@ -333,6 +380,15 @@ temporal schedule create \
   --overlap-policy Skip \
   --workflow-id thetadata-option-data-daily \
   --type ThetaDataOptionDataWorkflow \
+  --task-queue finance-tools
+
+temporal schedule create \
+  --schedule-id thetadata-option-backfill-daily \
+  --cron "30 8 * * *" \
+  --time-zone "America/New_York" \
+  --overlap-policy Skip \
+  --workflow-id thetadata-option-backfill-daily \
+  --type ThetaDataOptionBackfillWorkflow \
   --task-queue finance-tools
 ```
 

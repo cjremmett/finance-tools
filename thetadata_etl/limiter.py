@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Callable
 
 from thetadata_etl.config import UNKNOWN_JOB_PRIORITY, Settings
 
@@ -17,6 +18,7 @@ LOGGER = logging.getLogger("thetadata_etl.limiter")
 _SEQUENCE_SCALE = 2**33
 _WAKE_PREFIX = "thetadata:wake:"
 _WAITER_DEADLINE_MS = 30_000
+_HOLD_SECONDS = 10
 
 _GATE_SCRIPT = f"""
 local command = ARGV[1]
@@ -106,6 +108,12 @@ local function grant()
   redis.call('SET', 'thetadata:inflight', redis.call('ZCARD', leases))
 end
 
+-- A refresh from the holder arrives before reclaim, so a lease whose
+-- deadline has passed stays owned while that call is still running.
+if command == 'refresh' and redis.call('ZSCORE', leases, request_id) then
+  redis.call('ZADD', leases, now + lease_ms, request_id)
+end
+
 reclaim()
 refill()
 
@@ -117,7 +125,7 @@ if command == 'register' then
   end
 elseif command == 'refresh' then
   if redis.call('ZSCORE', leases, request_id) then
-    -- already holding a slot
+    -- deadline was moved forward above
   elseif redis.call('ZSCORE', waiters, request_id) then
     redis.call('ZADD', deadlines, now + {_WAITER_DEADLINE_MS}, request_id)
   else
@@ -136,6 +144,41 @@ if redis.call('ZSCORE', leases, request_id) then
 end
 return 0
 """
+
+
+@contextmanager
+def _refresh_until_released(
+    refresh: Callable[[], None],
+    heartbeat: Callable[[], None] | None,
+):
+    stop = threading.Event()
+
+    def run() -> None:
+        while not stop.wait(_HOLD_SECONDS):
+            try:
+                refresh()
+            except Exception:
+                LOGGER.warning("ThetaData lease refresh failed", exc_info=True)
+            if heartbeat is None:
+                continue
+            try:
+                heartbeat()
+            except Exception:
+                LOGGER.warning("ThetaData lease heartbeat failed", exc_info=True)
+
+    context = contextvars.copy_context()
+    thread = threading.Thread(
+        target=context.run,
+        args=(run,),
+        name="thetadata-lease-refresh",
+        daemon=True,
+    )
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=_HOLD_SECONDS + 1)
 
 
 def priority_for(job_name: str, priorities: dict[str, int]) -> int:
@@ -272,6 +315,13 @@ class MemoryGate:
                 if request_id in self._state.leases:
                     return request_id
 
+    def extend(self, lease_id: str) -> None:
+        with self._lock:
+            if lease_id in self._state.leases:
+                self._state.leases[lease_id] = (
+                    self._clock() + self._state.lease_seconds
+                )
+
     def release(self, lease_id: str) -> None:
         with self._lock:
             self._state.leases.pop(lease_id, None)
@@ -290,7 +340,8 @@ class MemoryGate:
         if lease_id is None:
             raise RuntimeError("ThetaData lease was not granted")
         try:
-            yield lease_id
+            with _refresh_until_released(lambda: self.extend(lease_id), heartbeat):
+                yield lease_id
         finally:
             self.release(lease_id)
 
@@ -341,6 +392,9 @@ class RedisGate:
             if self._invoke("refresh", request_id, priority) == 1:
                 return self._finish(request_id)
 
+    def extend(self, lease_id: str) -> None:
+        self._invoke("refresh", lease_id, 0)
+
     def release(self, lease_id: str) -> None:
         self._invoke("release", lease_id, 0)
 
@@ -355,7 +409,13 @@ class RedisGate:
     def lease(self, job_name: str, heartbeat: Callable[[], None] | None = None):
         lease_id = self.acquire(job_name, heartbeat=heartbeat)
         try:
-            yield lease_id
+            if lease_id is None:
+                yield None
+                return
+            with _refresh_until_released(
+                lambda: self.extend(lease_id), heartbeat
+            ):
+                yield lease_id
         finally:
             if lease_id is not None:
                 self.release(lease_id)

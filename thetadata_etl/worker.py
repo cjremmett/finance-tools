@@ -8,14 +8,17 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from thetadata_etl.activities import (
+    append_option_backfill_batch_activity,
     append_option_batch_activity,
     append_symbols_to_iceberg_activity,
     complete_option_day_activity,
     ensure_securities_catalog_activity,
     fetch_and_upload_symbols_activity,
+    fetch_option_backfill_symbol_activity,
     fetch_option_batch_activity,
     option_day_loaded_activity,
     confirm_option_open_interest_activity,
+    plan_option_backfill_activity,
     plan_option_batches_activity,
     resolve_option_session_activity,
     resolve_symbol_fetch_date_activity,
@@ -23,8 +26,33 @@ from thetadata_etl.activities import (
 )
 from thetadata_etl.config import Settings
 from thetadata_etl.workflows import (
+    ThetaDataOptionBackfillWorkflow,
     ThetaDataOptionDataWorkflow,
     ThetaDataSecuritiesWorkflow,
+)
+
+WORKFLOWS = (
+    ThetaDataSecuritiesWorkflow,
+    ThetaDataOptionDataWorkflow,
+    ThetaDataOptionBackfillWorkflow,
+)
+
+ACTIVITIES = (
+    resolve_symbol_fetch_date_activity,
+    ensure_securities_catalog_activity,
+    symbol_csv_exists_activity,
+    fetch_and_upload_symbols_activity,
+    append_symbols_to_iceberg_activity,
+    resolve_option_session_activity,
+    option_day_loaded_activity,
+    confirm_option_open_interest_activity,
+    plan_option_batches_activity,
+    fetch_option_batch_activity,
+    append_option_batch_activity,
+    complete_option_day_activity,
+    plan_option_backfill_activity,
+    fetch_option_backfill_symbol_activity,
+    append_option_backfill_batch_activity,
 )
 
 
@@ -39,21 +67,8 @@ async def run_worker() -> None:
         worker = Worker(
             client,
             task_queue=settings.temporal_task_queue,
-            workflows=[ThetaDataSecuritiesWorkflow, ThetaDataOptionDataWorkflow],
-            activities=[
-                resolve_symbol_fetch_date_activity,
-                ensure_securities_catalog_activity,
-                symbol_csv_exists_activity,
-                fetch_and_upload_symbols_activity,
-                append_symbols_to_iceberg_activity,
-                resolve_option_session_activity,
-                option_day_loaded_activity,
-                confirm_option_open_interest_activity,
-                plan_option_batches_activity,
-                fetch_option_batch_activity,
-                append_option_batch_activity,
-                complete_option_day_activity,
-            ],
+            workflows=list(WORKFLOWS),
+            activities=list(ACTIVITIES),
             activity_executor=activity_executor,
         )
         logging.info(
