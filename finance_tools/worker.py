@@ -31,19 +31,30 @@ from kalshi_markets.activities import (
 )
 from kalshi_markets.workflows import KalshiMarketMonitorWorkflow
 from thetadata_etl.activities import (
+    append_option_batch_activity,
     append_symbols_to_iceberg_activity,
+    complete_option_day_activity,
     ensure_securities_catalog_activity,
     fetch_and_upload_symbols_activity,
+    fetch_option_batch_activity,
+    option_day_loaded_activity,
+    confirm_option_open_interest_activity,
+    plan_option_batches_activity,
+    resolve_option_session_activity,
     resolve_symbol_fetch_date_activity,
     symbol_csv_exists_activity,
 )
-from thetadata_etl.workflows import ThetaDataSecuritiesWorkflow
+from thetadata_etl.workflows import (
+    ThetaDataOptionDataWorkflow,
+    ThetaDataSecuritiesWorkflow,
+)
 
 WORKFLOWS = (
     InterestRateScrapeWorkflow,
     KalshiMarketMonitorWorkflow,
     CryptoCarryWorkflow,
     ThetaDataSecuritiesWorkflow,
+    ThetaDataOptionDataWorkflow,
 )
 
 ACTIVITIES = (
@@ -65,6 +76,13 @@ ACTIVITIES = (
     symbol_csv_exists_activity,
     fetch_and_upload_symbols_activity,
     append_symbols_to_iceberg_activity,
+    resolve_option_session_activity,
+    option_day_loaded_activity,
+    confirm_option_open_interest_activity,
+    plan_option_batches_activity,
+    fetch_option_batch_activity,
+    append_option_batch_activity,
+    complete_option_day_activity,
 )
 
 

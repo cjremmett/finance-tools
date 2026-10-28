@@ -7,16 +7,31 @@ from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
     from thetadata_etl.datasets import (
+        APPEND_OPTION_BATCH,
         APPEND_SYMBOLS_TO_ICEBERG,
+        COMPLETE_OPTION_DAY,
+        CONFIRM_OPTION_OPEN_INTEREST,
         DATASETS,
         ENSURE_SECURITIES_CATALOG,
         FETCH_AND_UPLOAD_SYMBOLS,
+        FETCH_OPTION_BATCH,
+        OPTION_DATA_WORKFLOW,
+        OPTION_DAY_LOADED,
+        PLAN_OPTION_BATCHES,
+        RESOLVE_OPTION_SESSION,
         RESOLVE_SYMBOL_FETCH_DATE,
         SYMBOL_CSV_EXISTS,
     )
     from thetadata_etl.models import (
         AppendResult,
+        BatchAppendResult,
+        BatchFetchResult,
         DatasetResult,
+        LoadedDay,
+        OptionBatch,
+        OptionPlan,
+        OptionWorkflowResult,
+        SessionResolution,
         SymbolSnapshotRequest,
         WorkflowResult,
     )
@@ -87,3 +102,141 @@ class ThetaDataSecuritiesWorkflow:
             fetch_date=fetch_date,
             datasets=datasets,
         )
+
+
+def _retry_policy() -> RetryPolicy:
+    return RetryPolicy(
+        initial_interval=timedelta(seconds=5),
+        backoff_coefficient=2,
+        maximum_interval=timedelta(minutes=1),
+        maximum_attempts=3,
+    )
+
+
+def _open_interest_retry_policy() -> RetryPolicy:
+    return RetryPolicy(
+        initial_interval=timedelta(minutes=5),
+        backoff_coefficient=1,
+        maximum_interval=timedelta(minutes=5),
+        maximum_attempts=60,
+    )
+
+
+@workflow.defn(name=OPTION_DATA_WORKFLOW)
+class ThetaDataOptionDataWorkflow:
+    @workflow.run
+    async def run(self) -> OptionWorkflowResult:
+        info = workflow.info()
+        retry_policy = _retry_policy()
+        session: SessionResolution = await workflow.execute_activity(
+            RESOLVE_OPTION_SESSION,
+            workflow.now().isoformat(),
+            start_to_close_timeout=timedelta(minutes=10),
+            heartbeat_timeout=timedelta(seconds=60),
+            retry_policy=retry_policy,
+            result_type=SessionResolution,
+        )
+        if session.skipped:
+            return _option_result(
+                info.run_id,
+                trade_date="",
+                skipped=True,
+                skip_reason=session.skip_reason,
+            )
+        loaded: LoadedDay = await workflow.execute_activity(
+            OPTION_DAY_LOADED,
+            session.trade_date,
+            start_to_close_timeout=timedelta(seconds=30),
+            retry_policy=retry_policy,
+            result_type=LoadedDay,
+        )
+        if loaded.loaded:
+            return _option_result(
+                info.run_id,
+                trade_date=session.trade_date,
+                row_count=loaded.row_count,
+            )
+        await workflow.execute_activity(
+            CONFIRM_OPTION_OPEN_INTEREST,
+            session,
+            start_to_close_timeout=timedelta(minutes=10),
+            schedule_to_close_timeout=timedelta(hours=6),
+            heartbeat_timeout=timedelta(seconds=60),
+            retry_policy=_open_interest_retry_policy(),
+        )
+        plan: OptionPlan = await workflow.execute_activity(
+            PLAN_OPTION_BATCHES,
+            session.trade_date,
+            start_to_close_timeout=timedelta(minutes=2),
+            retry_policy=retry_policy,
+            result_type=OptionPlan,
+        )
+        fetched_count = 0
+        appended_rows = 0
+        for batch_index, symbols in enumerate(plan.batches):
+            batch = OptionBatch(
+                trade_date=session.trade_date,
+                oi_end_date=session.oi_end_date,
+                batch_index=batch_index,
+                symbols=symbols,
+            )
+            fetched: BatchFetchResult = await workflow.execute_activity(
+                FETCH_OPTION_BATCH,
+                batch,
+                start_to_close_timeout=timedelta(minutes=15),
+                schedule_to_close_timeout=timedelta(minutes=45),
+                heartbeat_timeout=timedelta(seconds=60),
+                retry_policy=retry_policy,
+                result_type=BatchFetchResult,
+            )
+            fetched_count += fetched.fetched
+            appended: BatchAppendResult = await workflow.execute_activity(
+                APPEND_OPTION_BATCH,
+                batch,
+                start_to_close_timeout=timedelta(minutes=5),
+                schedule_to_close_timeout=timedelta(minutes=15),
+                retry_policy=retry_policy,
+                result_type=BatchAppendResult,
+            )
+            appended_rows += appended.appended_rows
+        row_count = await workflow.execute_activity(
+            COMPLETE_OPTION_DAY,
+            session.trade_date,
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=retry_policy,
+            result_type=int,
+        )
+        return _option_result(
+            info.run_id,
+            trade_date=session.trade_date,
+            symbol_snapshot_date=plan.symbol_snapshot_date,
+            underlying_count=plan.underlying_count,
+            fetched_count=fetched_count,
+            appended_rows=appended_rows,
+            row_count=row_count,
+        )
+
+
+def _option_result(
+    workflow_run_id: str,
+    *,
+    trade_date: str,
+    skipped: bool = False,
+    skip_reason: str = "",
+    symbol_snapshot_date: str = "",
+    underlying_count: int = 0,
+    fetched_count: int = 0,
+    appended_rows: int = 0,
+    row_count: int = 0,
+) -> OptionWorkflowResult:
+    return OptionWorkflowResult(
+        workflow_run_id=workflow_run_id,
+        trade_date=trade_date,
+        skipped=skipped,
+        skip_reason=skip_reason,
+        symbol_snapshot_date=symbol_snapshot_date,
+        underlying_count=underlying_count,
+        fetched_count=fetched_count,
+        appended_rows=appended_rows,
+        row_count=row_count,
+    )

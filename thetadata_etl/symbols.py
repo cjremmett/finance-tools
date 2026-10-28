@@ -1,21 +1,33 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date
 
 import polars as pl
 
-from thetadata_etl.datasets import FETCH_METHODS, MIN_SYMBOL_ROWS, require_dataset
+from thetadata_etl.datasets import (
+    FETCH_METHODS,
+    MIN_SYMBOL_ROWS,
+    SECURITIES_WORKFLOW,
+    require_dataset,
+)
 
 
-def fetch_symbol_frame(dataset: str, api_key: str) -> pl.DataFrame:
+def fetch_symbol_frame(
+    dataset: str,
+    api_key: str,
+    gate: object,
+    heartbeat: Callable[[], None] | None = None,
+) -> pl.DataFrame:
     # ThetaClient logs the auth response, including the session id, at INFO.
     logging.getLogger("thetadata").setLevel(logging.ERROR)
     from thetadata import ThetaClient
 
-    client = ThetaClient(api_key=api_key, dataframe_type="polars")
     method_name = FETCH_METHODS[require_dataset(dataset)]
-    frame = getattr(client, method_name)()
+    with gate.lease(SECURITIES_WORKFLOW, heartbeat=heartbeat):
+        client = ThetaClient(api_key=api_key, dataframe_type="polars")
+        frame = getattr(client, method_name)()
     if not isinstance(frame, pl.DataFrame):
         raise RuntimeError(
             f"ThetaData {method_name} returned {type(frame).__name__}, expected a DataFrame"
