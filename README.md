@@ -245,8 +245,9 @@ open interest for the highest-volume symbol stored before this trade date.
 An empty volume history uses AAPL. ThetaData returns no data when today's
 print is not up yet. A print whose timestamps fall on the trade date is the
 previous session. Either result fails that activity. Its Temporal retry
-policy waits 5 minutes and tries again, up to 60 attempts. The first attempt
-runs immediately, so the last attempt is 4 hours 55 minutes after the start.
+policy waits 5 minutes and tries again, up to 6 attempts. The first attempt
+runs immediately, so the last attempt is 25 minutes after the start. The
+activity's schedule-to-close limit is 30 minutes.
 
 Open interest is stored as `0` when ThetaData sends zero or omits the print
 for a symbol after that probe has succeeded. That includes a contract with
