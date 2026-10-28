@@ -118,7 +118,7 @@ def _open_interest_retry_policy() -> RetryPolicy:
         initial_interval=timedelta(minutes=5),
         backoff_coefficient=1,
         maximum_interval=timedelta(minutes=5),
-        maximum_attempts=60,
+        maximum_attempts=6,
     )
 
 
@@ -160,7 +160,7 @@ class ThetaDataOptionDataWorkflow:
             CONFIRM_OPTION_OPEN_INTEREST,
             session,
             start_to_close_timeout=timedelta(minutes=10),
-            schedule_to_close_timeout=timedelta(hours=6),
+            schedule_to_close_timeout=timedelta(minutes=30),
             heartbeat_timeout=timedelta(seconds=60),
             retry_policy=_open_interest_retry_policy(),
         )
