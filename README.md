@@ -16,6 +16,9 @@ This repository contains a shared Temporal worker pool that monitors:
   that have both a stock listing and an options chain.
 - One year of that same option history for those symbols, excluding the latest
   session, which the daily option load still owns.
+- One year of MarketParquet daily stock and ETF bars, the free-account window,
+  stored as dated CSVs in Garage and appended to
+  `securities_data.securities.stock_data`.
 
 The worker process registers every workflow and all of their activities on the
 single `finance-tools` task queue. The interest-rate workflow runs its five
@@ -49,6 +52,7 @@ Every replica in the worker pool registers this complete Temporal contract:
 | `ThetaDataSecuritiesWorkflow` | `finance-tools` | None |
 | `ThetaDataOptionDataWorkflow` | `finance-tools` | None |
 | `ThetaDataOptionBackfillWorkflow` | `finance-tools` | None |
+| `MarketParquetStockDataWorkflow` | `finance-tools` | None |
 
 The namespace defaults to `default`. Do not run workers with different workflow
 registrations on the shared queue; every `finance-tools` worker must register
@@ -313,6 +317,51 @@ The backfill acquires the shared gate as `ThetaDataOptionBackfillWorkflow`
 (priority 100). While a morning job is waiting, the backfill parks between
 calls.
 
+## MarketParquet daily stock and ETF bars
+
+`MarketParquetStockDataWorkflow` loads every `stock_daily` and `etf_daily`
+session the free MarketParquet key can see. Each dataset has its own dates
+API list. Futures and intraday files are not loaded. The free window is the
+last year of daily bars. A later run picks up a newly published session and
+leaves rows that have aged out of the free window. A day can load one dataset
+when the other is already stored.
+
+```bash
+temporal workflow start \
+  --type MarketParquetStockDataWorkflow \
+  --task-queue finance-tools \
+  --workflow-id marketparquet-stock-data-initial
+```
+
+Each session is one Parquet file per dataset. Files before 2026-03-27 carry
+the trading day in `timestamp` instead of `date`. The workflow writes one
+normalized CSV per session to
+`s3://securities-data/securities/stock_data/stocks-YYYY-MM-DD.csv` or
+`etfs-YYYY-MM-DD.csv` with columns `date`, `symbol`, `asset_type`, `open`,
+`high`, `low`, `close`, and `volume`. Stock CSVs already stored as
+`YYYY-MM-DD.csv` still count as downloaded. Volume stays a float because
+split-adjusted volume is fractional. DuckDB then inserts that CSV into
+`securities_data.securities.stock_data`, which stores the Parquet data files
+in the Iceberg table. `asset_type` is `Stock` or `ETF`. A stock session with
+fewer than 5,000 rows is rejected. An ETF session with fewer than 3,000 rows
+is rejected.
+
+A CSV already in Garage is not downloaded again. A dataset already stored for
+that date, with at least its row floor, is not inserted again. The job creates
+the `securities-data` bucket, the `securities` namespace, and the `stock_data`
+table when they are missing. It attaches the existing `securities_data`
+warehouse.
+
+Authenticated calls share a Redis bucket at 50 requests per minute, under the
+free tier's 60 per minute. A `429` waits for `Retry-After`. Presigned file
+downloads do not take a token. Bulk days use the manifest, one call per
+missing range, at most 40 dates per activity. Set
+`MARKETPARQUET_REQUESTS_PER_MINUTE` from 1 to 60 to change the bucket.
+
+The ETL Discord channel receives a start message and a finished message when
+there is work, a single idle message when every session is already stored,
+and a failure message when the run raises. Cancellation is not reported.
+
 ## Temporal Schedules
 
 Compose runs Redis on the compose network, and every ThetaData call in this
@@ -340,8 +389,9 @@ while it is still running.
 
 The following schedules run interest-rate checks hourly on the hour, the
 Kalshi, crypto-carry, and ThetaData securities jobs daily at 5:00 a.m. Eastern,
-the ThetaData option chain job daily at 7:00 a.m. Eastern, and the option
-history backfill daily at 8:30 a.m. Eastern. Overlap `Skip` on the backfill
+the ThetaData option chain job daily at 7:00 a.m. Eastern, the option
+history backfill daily at 8:30 a.m. Eastern, and the MarketParquet stock and
+ETF job daily at 6:00 a.m. Eastern. Overlap `Skip` on the backfill
 leaves an 8:30 trigger alone while an earlier backfill run is still open:
 
 ```bash
@@ -396,6 +446,16 @@ temporal schedule create \
   --overlap-policy Skip \
   --workflow-id thetadata-option-backfill-daily \
   --type ThetaDataOptionBackfillWorkflow \
+  --task-queue finance-tools
+
+temporal schedule create \
+  --schedule-id marketparquet-stock-data-daily \
+  --cron "0 6 * * *" \
+  --time-zone "America/New_York" \
+  --catchup-window 0s \
+  --overlap-policy Skip \
+  --workflow-id marketparquet-stock-data-daily \
+  --type MarketParquetStockDataWorkflow \
   --task-queue finance-tools
 ```
 

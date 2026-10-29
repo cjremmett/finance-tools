@@ -27,6 +27,7 @@ interest-rate-worker = "interest_rates_scraper.worker:main"
 kalshi-market-worker = "kalshi_markets.worker:main"
 crypto-carry-worker = "crypto_carry.worker:main"
 thetadata-etl-worker = "thetadata_etl.worker:main"
+marketparquet-etl-worker = "marketparquet_etl.worker:main"
 
 [dependency-groups]
 dev = [
@@ -45,6 +46,7 @@ packages = [
     "kalshi_markets",
     "crypto_carry",
     "thetadata_etl",
+    "marketparquet_etl",
 ]
 exclude = [
     "kalshi_markets/kalshi-api-key*.txt",

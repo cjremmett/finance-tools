@@ -7,6 +7,7 @@ COPY interest_rates_scraper ./interest_rates_scraper
 COPY kalshi_markets ./kalshi_markets
 COPY crypto_carry ./crypto_carry
 COPY thetadata_etl ./thetadata_etl
+COPY marketparquet_etl ./marketparquet_etl
 RUN --mount=type=cache,target=/root/.cache/pip python -m pip wheel --wheel-dir /wheels .
 
 FROM python:3.12-slim

@@ -10,6 +10,14 @@ from crypto_carry.activities import (
 )
 from crypto_carry.workflows import CryptoCarryWorkflow
 from finance_tools.worker import ACTIVITIES, WORKFLOWS
+from marketparquet_etl.activities import (
+    append_marketparquet_stock_days_activity,
+    ensure_marketparquet_catalog_activity,
+    fetch_marketparquet_stock_days_activity,
+    plan_marketparquet_stock_sync_activity,
+    send_marketparquet_discord_message_activity,
+)
+from marketparquet_etl.workflows import MarketParquetStockDataWorkflow
 from interest_rates_scraper.activities import (
     mark_notification_sent_activity,
     persist_interest_rates_activity,
@@ -112,6 +120,7 @@ def test_combined_worker_registers_all_jobs() -> None:
         ThetaDataSecuritiesWorkflow,
         ThetaDataOptionDataWorkflow,
         ThetaDataOptionBackfillWorkflow,
+        MarketParquetStockDataWorkflow,
     )
     assert ACTIVITIES == (
         scrape_fed_rate_activity,
@@ -143,6 +152,11 @@ def test_combined_worker_registers_all_jobs() -> None:
         fetch_option_backfill_symbol_activity,
         append_option_backfill_batch_activity,
         send_thetadata_discord_message_activity,
+        ensure_marketparquet_catalog_activity,
+        plan_marketparquet_stock_sync_activity,
+        fetch_marketparquet_stock_days_activity,
+        append_marketparquet_stock_days_activity,
+        send_marketparquet_discord_message_activity,
     )
 
 

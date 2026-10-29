@@ -30,6 +30,14 @@ from kalshi_markets.activities import (
     send_kalshi_discord_message_activity,
 )
 from kalshi_markets.workflows import KalshiMarketMonitorWorkflow
+from marketparquet_etl.activities import (
+    append_marketparquet_stock_days_activity,
+    ensure_marketparquet_catalog_activity,
+    fetch_marketparquet_stock_days_activity,
+    plan_marketparquet_stock_sync_activity,
+    send_marketparquet_discord_message_activity,
+)
+from marketparquet_etl.workflows import MarketParquetStockDataWorkflow
 from thetadata_etl.activities import (
     append_option_backfill_batch_activity,
     append_option_batch_activity,
@@ -61,6 +69,7 @@ WORKFLOWS = (
     ThetaDataSecuritiesWorkflow,
     ThetaDataOptionDataWorkflow,
     ThetaDataOptionBackfillWorkflow,
+    MarketParquetStockDataWorkflow,
 )
 
 ACTIVITIES = (
@@ -93,6 +102,11 @@ ACTIVITIES = (
     fetch_option_backfill_symbol_activity,
     append_option_backfill_batch_activity,
     send_thetadata_discord_message_activity,
+    ensure_marketparquet_catalog_activity,
+    plan_marketparquet_stock_sync_activity,
+    fetch_marketparquet_stock_days_activity,
+    append_marketparquet_stock_days_activity,
+    send_marketparquet_discord_message_activity,
 )
 
 
