@@ -6,6 +6,7 @@ from thetadata_etl.config import Settings
 from thetadata_etl.datasets import (
     MIN_SYMBOL_ROWS,
     OPTION_DATA_TABLE,
+    OPTION_OPEN_INTEREST_TABLE,
     OPTION_VOLUME_TABLE,
     WAREHOUSE,
     object_key,
@@ -64,7 +65,14 @@ def count_sql(dataset: str, fetch_date: str) -> str:
     return f"SELECT count(*) FROM {table} WHERE date = DATE '{day}'"
 
 
-_OPTION_TABLES = frozenset({OPTION_DATA_TABLE, OPTION_VOLUME_TABLE})
+_OPTION_TABLES = frozenset(
+    {OPTION_DATA_TABLE, OPTION_VOLUME_TABLE, OPTION_OPEN_INTEREST_TABLE}
+)
+# source column, total column, and whether each right is its own row.
+_SUMMARY_COLUMNS = {
+    OPTION_VOLUME_TABLE: ("volume", "total_volume", False),
+    OPTION_OPEN_INTEREST_TABLE: ("open_interest", "total_open_interest", True),
+}
 _OPTION_CSV_TYPES = {
     "symbol": "VARCHAR",
     "expiration": "DATE",
@@ -113,6 +121,16 @@ def create_option_volume_sql() -> str:
         f"    {_sql_name('symbol')} VARCHAR,\n"
         f"    {_sql_name('date')} DATE,\n"
         f"    {_sql_name('total_volume')} BIGINT\n)"
+    )
+
+
+def create_option_open_interest_sql() -> str:
+    return (
+        f"CREATE TABLE IF NOT EXISTS {OPTION_OPEN_INTEREST_TABLE} (\n"
+        f"    {_sql_name('symbol')} VARCHAR,\n"
+        f"    {_sql_name('date')} DATE,\n"
+        f"    {_sql_name('right')} VARCHAR,\n"
+        f"    {_sql_name('total_open_interest')} BIGINT\n)"
     )
 
 
@@ -225,6 +243,90 @@ ANTI JOIN {OPTION_VOLUME_TABLE} AS existing
     ON existing.{symbol} = csv.{symbol} AND existing.{day} = csv.{day}
 GROUP BY csv.{symbol}, csv.{day}
 """.strip()
+
+
+def open_interest_insert_sql(part_key: str) -> str:
+    return _open_interest_csv_sql(require_option_part_key(part_key))
+
+
+def backfill_open_interest_sql(part_key: str) -> str:
+    return _open_interest_csv_sql(require_backfill_part_key(part_key))
+
+
+def summary_backfill_sql(table: str, symbols: list[str]) -> str:
+    relation = _require_summary_table(table)
+    source_name, total_name, by_right = _SUMMARY_COLUMNS[relation]
+    quoted = _symbol_list(symbols)
+    symbol = _sql_name("symbol")
+    day = _sql_name("date")
+    source = _sql_name(source_name)
+    total = _sql_name(total_name)
+    right = _sql_name("right")
+    insert_right = f", {right}" if by_right else ""
+    select_right = f", d.{right}" if by_right else ""
+    join_right = f" AND existing.{right} = d.{right}" if by_right else ""
+    group = f"d.{symbol}, d.{day}, d.{right}" if by_right else f"d.{symbol}, d.{day}"
+    return f"""
+INSERT INTO {relation} ({symbol}, {day}{insert_right}, {total})
+SELECT d.{symbol}, d.{day}{select_right}, CAST(sum(d.{source}) AS BIGINT) AS {total}
+FROM {OPTION_DATA_TABLE} AS d
+ANTI JOIN {relation} AS existing
+    ON existing.{symbol} = d.{symbol} AND existing.{day} = d.{day}{join_right}
+WHERE d.{symbol} IN ({quoted})
+GROUP BY {group}
+""".strip()
+
+
+def summary_gap_symbols_sql(symbols: list[str]) -> str:
+    quoted = _symbol_list(symbols)
+    symbol = _sql_name("symbol")
+    day = _sql_name("date")
+    right = _sql_name("right")
+    return f"""
+SELECT DISTINCT {symbol} FROM (
+    SELECT d.{symbol} AS {symbol}
+    FROM {OPTION_DATA_TABLE} AS d
+    ANTI JOIN {OPTION_VOLUME_TABLE} AS volume
+        ON volume.{symbol} = d.{symbol} AND volume.{day} = d.{day}
+    WHERE d.{symbol} IN ({quoted})
+    UNION
+    SELECT d.{symbol} AS {symbol}
+    FROM {OPTION_DATA_TABLE} AS d
+    ANTI JOIN {OPTION_OPEN_INTEREST_TABLE} AS interest
+        ON interest.{symbol} = d.{symbol}
+        AND interest.{day} = d.{day}
+        AND interest.{right} = d.{right}
+    WHERE d.{symbol} IN ({quoted})
+)
+""".strip()
+
+
+def _open_interest_csv_sql(key: str) -> str:
+    symbol = _sql_name("symbol")
+    day = _sql_name("date")
+    right = _sql_name("right")
+    source = _sql_name("open_interest")
+    total = _sql_name("total_open_interest")
+    return f"""
+INSERT INTO {OPTION_OPEN_INTEREST_TABLE} ({symbol}, {day}, {right}, {total})
+SELECT csv.{symbol}, csv.{day}, csv.{right}, CAST(sum(csv.{source}) AS BIGINT) AS {total}
+FROM read_csv(
+    's3://securities-data/{key}',
+    header = true,
+    columns = {_option_csv_columns()}
+) AS csv
+ANTI JOIN {OPTION_OPEN_INTEREST_TABLE} AS existing
+    ON existing.{symbol} = csv.{symbol}
+    AND existing.{day} = csv.{day}
+    AND existing.{right} = csv.{right}
+GROUP BY csv.{symbol}, csv.{day}, csv.{right}
+""".strip()
+
+
+def _require_summary_table(table: str) -> str:
+    if table not in _SUMMARY_COLUMNS:
+        raise ValueError(f"unknown option summary table: {table}")
+    return table
 
 
 def backfill_count_sql(symbols: list[str], start: str, end: str) -> str:
@@ -379,6 +481,7 @@ def ensure_option_tables(client: QuackCatalog, catalog_uri: str) -> None:
     ensure_catalog(client, catalog_uri)
     client.execute(create_option_data_sql())
     client.execute(create_option_volume_sql())
+    client.execute(create_option_open_interest_sql())
 
 
 def append_option_part(
@@ -406,6 +509,7 @@ def append_option_part(
         if any(symbol not in summarized for symbol in validated):
             volume_skip = [symbol for symbol in validated if symbol in summarized]
             client.execute(volume_insert_sql(key, volume_skip))
+        client.execute(open_interest_insert_sql(key))
     after = client.scalar(option_count_sql(day))
     return after - before
 
@@ -485,8 +589,29 @@ def append_backfill_part(
     before = client.scalar(backfill_count_sql(validated, start, end))
     client.execute(backfill_insert_sql(key))
     client.execute(backfill_volume_sql(key))
+    client.execute(backfill_open_interest_sql(key))
+    _write_missing_summaries(client, validated)
     after = client.scalar(backfill_count_sql(validated, start, end))
     return after - before
+
+
+def backfill_symbol_summaries(settings: Settings, symbols: list[str]) -> None:
+    validated = [require_option_symbol(symbol) for symbol in symbols]
+    if not validated:
+        return
+    client = QuackCatalog(settings.quack_uri, settings.quack_token)
+    try:
+        ensure_option_tables(client, settings.iceberg_catalog_uri)
+        _write_missing_summaries(client, validated)
+    finally:
+        client.close()
+
+
+def _write_missing_summaries(client: QuackCatalog, symbols: list[str]) -> None:
+    if not symbols:
+        return
+    client.execute(summary_backfill_sql(OPTION_VOLUME_TABLE, symbols))
+    client.execute(summary_backfill_sql(OPTION_OPEN_INTEREST_TABLE, symbols))
 
 
 def latest_option_volumes(settings: Settings, trade_date: str) -> dict[str, int]:

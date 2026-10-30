@@ -271,12 +271,15 @@ way.
 Symbols go out in descending order of total option volume on the latest stored
 session before this trade date. Ties break alphabetically by symbol. The first
 run, with an empty volume history, is alphabetical. Each batch is appended to
-`securities_data.securities.option_data` when its checkpoints are written, and
-the per-symbol totals land in
-`securities_data.securities.option_symbol_volume`. After the full session is
-stored, the workflow writes
-`securities/option_data/YYYY-MM-DD/_COMPLETE`. The next run for that session
-reads the marker and returns the stored row count.
+`securities_data.securities.option_data` when its checkpoints are written.
+`securities_data.securities.option_symbol_volume` gets that session's total
+volume for each symbol. `securities_data.securities.option_symbol_open_interest`
+gets that session split by right, so calls and puts are separate rows and each
+row is the sum of that right's open interest. Contracts already stored for that
+session still receive a summary row that is missing. After the full session is
+stored, the
+workflow writes `securities/option_data/YYYY-MM-DD/_COMPLETE`. The next run for
+that session reads the marker and returns the stored row count.
 
 ## ThetaData option history backfill
 
@@ -297,11 +300,15 @@ Each symbol is requested a few sessions at a time. A range that comes back
 short, or that ThetaData rejects, is split, and a single session uses the same
 loader as the daily job. Empty chains are stored as empty checkpoints. Rows
 already in `option_data` for that symbol and date are not inserted again.
-`option_symbol_volume` gets the same daily totals. A symbol is finished only
-when every session in the window has a checkpoint. The next morning fills
-symbols that are new to the join and any session the daily job missed once
-that session is no longer the latest one. A morning with nothing missing does
-no ThetaData work.
+`option_symbol_volume` gets the daily volume total. `option_symbol_open_interest`
+gets one open-interest total per right (`call` and `put`). A stored symbol-day
+with either summary missing is filled from `option_data`, including a symbol
+whose checkpoint marker already covers the window, and that fill does not call
+ThetaData. A symbol is finished only when every session in the window has a
+checkpoint and every stored contract day has both summaries. The next morning
+fills symbols that are new to the join and any session the daily job missed
+once that session is no longer the latest one. A morning with nothing missing
+does no ThetaData work.
 
 Progress is the per-session checkpoint under
 `securities/option_data/YYYY-MM-DD/symbols/` plus

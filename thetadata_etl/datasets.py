@@ -43,6 +43,10 @@ OPTION_OI_PROBE_SYMBOL = "AAPL"
 OPEN_INTEREST_NOT_READY = "OpenInterestNotReady"
 OPTION_DATA_TABLE = f"{WAREHOUSE}.{NAMESPACE}.option_data"
 OPTION_VOLUME_TABLE = f"{WAREHOUSE}.{NAMESPACE}.option_symbol_volume"
+OPTION_OPEN_INTEREST_TABLE = (
+    f"{WAREHOUSE}.{NAMESPACE}.option_symbol_open_interest"
+)
+SUMMARY_GAP_CHUNK = 40
 
 _CATALOG_URI = re.compile(r"https?://[A-Za-z0-9._:-]+(?:/[A-Za-z0-9._~/-]*)?")
 _OPTION_SYMBOL = re.compile(r"^[A-Za-z0-9._-]+$")

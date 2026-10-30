@@ -23,14 +23,17 @@ from thetadata_etl.calendar import (
     sessions_to_inspect,
 )
 from thetadata_etl.catalog import (
+    QuackCatalog,
     append_backfill_csv,
     append_option_csv,
     append_symbol_csv,
+    backfill_symbol_summaries,
     ensure_option_tables,
     ensure_securities_catalog,
     latest_option_volumes,
     loaded_backfill_pairs,
     option_session_row_count,
+    summary_gap_symbols_sql,
 )
 from thetadata_etl.config import Settings
 from thetadata_etl.discord import send_discord_message
@@ -57,6 +60,7 @@ from thetadata_etl.datasets import (
     RESOLVE_OPTION_SESSION,
     RESOLVE_SYMBOL_FETCH_DATE,
     SEND_THETADATA_DISCORD,
+    SUMMARY_GAP_CHUNK,
     SYMBOL_CSV_EXISTS,
     backfill_marker_key,
     backfill_marker_symbol,
@@ -459,6 +463,23 @@ def complete_option_day_activity(trade_date: str) -> int:
     return count
 
 
+def _summary_gap_symbols(settings: Settings, symbols: list[str]) -> set[str]:
+    if not symbols:
+        return set()
+    client = QuackCatalog(settings.quack_uri, settings.quack_token)
+    try:
+        ensure_option_tables(client, settings.iceberg_catalog_uri)
+        found: set[str] = set()
+        for offset in range(0, len(symbols), SUMMARY_GAP_CHUNK):
+            activity.heartbeat(offset)
+            chunk = symbols[offset : offset + SUMMARY_GAP_CHUNK]
+            rows = client.execute(summary_gap_symbols_sql(chunk))
+            found.update(require_option_symbol(str(row[0])) for row in rows)
+        return found
+    finally:
+        client.close()
+
+
 def _latest_snapshot(store: GarageStore) -> str:
     from thetadata_etl.datasets import latest_shared_snapshot
 
@@ -550,25 +571,31 @@ def plan_option_backfill_activity(observed_at: str) -> BackfillPlan:
     )
     symbols = intersect_symbols(stocks, underlyings)
     markers = _load_markers(store, symbols)
+    gaps = _summary_gap_symbols(settings, symbols)
     window_start = start.isoformat()
     window_end = sessions[-1].isoformat()
     needed: list[str] = []
     covered = 0
     for symbol in symbols:
         coverage = markers.get(symbol)
-        if coverage is not None and coverage_holds(
-            coverage.start, coverage.through, window_start, window_end
+        if (
+            coverage is not None
+            and coverage_holds(
+                coverage.start, coverage.through, window_start, window_end
+            )
+            and symbol not in gaps
         ):
             covered += 1
             continue
         needed.append(symbol)
     activity.logger.info(
-        "backfill window %s..%s excluded=%s symbols=%s covered=%s snapshot=%s",
+        "backfill window %s..%s excluded=%s symbols=%s covered=%s summary_gaps=%s snapshot=%s",
         window_start,
         window_end,
         excluded.isoformat(),
         len(needed),
         covered,
+        len(gaps),
         snapshot,
     )
     return BackfillPlan(
@@ -688,6 +715,8 @@ def append_option_backfill_batch_activity(request: BackfillAppendRequest) -> int
         appended = append_backfill_csv(
             settings, part_key, symbols, window_start, window_end
         )
+    else:
+        backfill_symbol_summaries(settings, symbols)
     payload = json.dumps({"start": window_start, "through": window_end}).encode(
         "utf-8"
     )

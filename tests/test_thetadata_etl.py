@@ -30,16 +30,21 @@ from thetadata_etl.catalog import (
     attach_sql,
     backfill_count_sql,
     backfill_insert_sql,
+    backfill_open_interest_sql,
     backfill_pairs_sql,
     backfill_volume_sql,
     count_sql,
     create_option_data_sql,
+    create_option_open_interest_sql,
     create_option_volume_sql,
     create_table_sql,
     insert_sql,
     latest_volume_sql,
     loaded_backfill_pairs,
+    open_interest_insert_sql,
     option_insert_sql,
+    summary_backfill_sql,
+    summary_gap_symbols_sql,
     symbols_present_sql,
     volume_insert_sql,
 )
@@ -49,6 +54,7 @@ from thetadata_etl.datasets import (
     OPTION_BACKFILL_WORKFLOW,
     OPTION_DATA_TABLE,
     OPTION_DATA_WORKFLOW,
+    OPTION_OPEN_INTEREST_TABLE,
     OPTION_VOLUME_TABLE,
     backfill_marker_key,
     backfill_part_key,
@@ -74,6 +80,7 @@ from thetadata_etl.discord import (
     send_discord_message,
 )
 from thetadata_etl.models import (
+    BackfillAppendRequest,
     BackfillResult,
     BackfillState,
     BackfillSymbolRequest,
@@ -523,11 +530,20 @@ def test_option_append_sql_skips_symbols_already_loaded() -> None:
     volume_sql = create_option_volume_sql()
     assert OPTION_VOLUME_TABLE in volume_sql
     assert '"total_volume" BIGINT' in volume_sql
+    interest_sql = create_option_open_interest_sql()
+    assert OPTION_OPEN_INTEREST_TABLE in interest_sql
+    assert '"right" VARCHAR' in interest_sql
+    assert '"total_open_interest" BIGINT' in interest_sql
     plain = option_insert_sql(part, [])
     assert "WHERE" not in plain
     assert '"symbol", "expiration", "strike", "right"' in plain
     assert "getenv" not in plain
     assert 'GROUP BY "symbol", "date"' in volume_insert_sql(part, [])
+    assert '"right"' not in volume_insert_sql(part, []).split("GROUP BY", 1)[1]
+    interest = open_interest_insert_sql(part)
+    assert "ANTI JOIN" in interest
+    assert 'GROUP BY csv."symbol", csv."date", csv."right"' in interest
+    assert 'existing."right" = csv."right"' in interest
     assert "date < DATE '2026-10-26'" in latest_volume_sql("2026-10-26")
     assert "row_number()" in latest_volume_sql("2026-10-26")
     with pytest.raises(ValueError):
@@ -548,11 +564,12 @@ def test_option_append_sql_skips_symbols_already_loaded() -> None:
     )
     assert appended == 2
     inserts = [sql for sql in client.statements if sql.startswith("INSERT INTO")]
-    assert len(inserts) == 2
-    assert all("NOT IN ('AAPL')" in sql for sql in inserts)
+    assert len(inserts) == 3
+    assert all("NOT IN ('AAPL')" in sql for sql in inserts[:2])
     assert all("MSFT" not in sql.split("WHERE", 1)[-1] for sql in inserts)
     assert any(OPTION_DATA_TABLE in sql for sql in inserts)
     assert any(OPTION_VOLUME_TABLE in sql for sql in inserts)
+    assert inserts[2].startswith(f"INSERT INTO {OPTION_OPEN_INTEREST_TABLE}")
     assert all("getenv" not in sql for sql in inserts)
 
     loaded = _RecordingQuack(
@@ -569,7 +586,10 @@ def test_option_append_sql_skips_symbols_already_loaded() -> None:
         )
         == 0
     )
-    assert not any(sql.startswith("INSERT INTO") for sql in loaded.statements)
+    loaded_inserts = [sql for sql in loaded.statements if sql.startswith("INSERT INTO")]
+    assert len(loaded_inserts) == 1
+    assert "ANTI JOIN" in loaded_inserts[0]
+    assert OPTION_OPEN_INTEREST_TABLE in loaded_inserts[0]
 
 
 class _Gate:
@@ -975,11 +995,34 @@ def test_backfill_insert_skips_loaded_symbol_dates_and_writes_volume() -> None:
     assert key == "securities/option_backfill/parts/2026-10-26/part-0000.csv"
     insert = backfill_insert_sql(key)
     volume = backfill_volume_sql(key)
+    interest = backfill_open_interest_sql(key)
     assert "ANTI JOIN" in insert
     assert OPTION_DATA_TABLE in insert
     assert "ANTI JOIN" in volume
     assert "GROUP BY" in volume
     assert OPTION_VOLUME_TABLE in volume
+    assert '"right"' not in volume.split("GROUP BY", 1)[1]
+    assert "ANTI JOIN" in interest
+    assert 'GROUP BY csv."symbol", csv."date", csv."right"' in interest
+    volume_history = summary_backfill_sql(OPTION_VOLUME_TABLE, ["AAPL"])
+    interest_history = summary_backfill_sql(OPTION_OPEN_INTEREST_TABLE, ["AAPL"])
+    assert "ANTI JOIN" in volume_history
+    assert OPTION_DATA_TABLE in volume_history
+    assert 'GROUP BY d."symbol", d."date"' in volume_history
+    assert '"right"' not in volume_history.split("GROUP BY", 1)[1]
+    assert "ANTI JOIN" in interest_history
+    assert 'existing."right" = d."right"' in interest_history
+    assert 'GROUP BY d."symbol", d."date", d."right"' in interest_history
+    gaps = summary_gap_symbols_sql(["MSFT"])
+    assert gaps.count("ANTI JOIN") == 2
+    assert 'interest."right" = d."right"' in gaps
+    assert "volume." in gaps and '"right"' not in gaps.split("volume", 1)[1].split("UNION", 1)[0]
+    with pytest.raises(ValueError):
+        summary_backfill_sql(OPTION_DATA_TABLE, ["AAPL"])
+    with pytest.raises(ValueError):
+        summary_gap_symbols_sql([])
+    with pytest.raises(ValueError):
+        summary_backfill_sql(OPTION_VOLUME_TABLE, ["AAPL'; DROP"])
     assert "BETWEEN DATE '2026-10-23' AND DATE '2026-10-26'" in backfill_count_sql(
         ["AAPL"], "2026-10-23", "2026-10-26"
     )
@@ -1004,9 +1047,18 @@ def test_backfill_insert_skips_loaded_symbol_dates_and_writes_volume() -> None:
     )
     assert appended == 2
     inserts = [sql for sql in writer.statements if sql.startswith("INSERT INTO")]
-    assert len(inserts) == 2
+    assert len(inserts) == 5
     assert all("ANTI JOIN" in sql for sql in inserts)
-    assert any(OPTION_VOLUME_TABLE in sql for sql in inserts)
+    assert any(OPTION_VOLUME_TABLE in sql and "read_csv" in sql for sql in inserts)
+    assert any(
+        OPTION_OPEN_INTEREST_TABLE in sql and "read_csv" in sql for sql in inserts
+    )
+    assert any(
+        OPTION_VOLUME_TABLE in sql and OPTION_DATA_TABLE in sql for sql in inserts
+    )
+    assert any(
+        OPTION_OPEN_INTEREST_TABLE in sql and OPTION_DATA_TABLE in sql for sql in inserts
+    )
 
 
 def test_gave_up_recognizes_only_a_failed_backfill_symbol() -> None:
@@ -1042,6 +1094,7 @@ def test_backfill_plan_skips_symbols_the_marker_already_covers(
     monkeypatch.setattr(activities, "garage_store", lambda _settings: store)
     monkeypatch.setattr(activities, "_thetadata_gate", _quiet_gate)
     monkeypatch.setattr(activities, "_theta_client", lambda _api_key: _YearClient())
+    monkeypatch.setattr(activities, "_summary_gap_symbols", lambda _settings, _symbols: set())
     plan = activities.plan_option_backfill_activity("2026-10-28T12:30:00+00:00")
     assert plan.excluded == "2026-10-27"
     assert plan.window_start == "2025-10-27"
@@ -1052,6 +1105,85 @@ def test_backfill_plan_skips_symbols_the_marker_already_covers(
     assert plan.symbols == ["IBM", "MSFT"]
     assert plan.covered == 1
     assert plan.symbol_snapshot_date == "2026-10-27"
+
+
+def test_backfill_plan_includes_a_covered_symbol_missing_a_summary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _required_settings(monkeypatch)
+    monkeypatch.setattr(activities.activity, "heartbeat", lambda *_args, **_kwargs: None)
+    snapshot = b"symbol\nAAPL\nMSFT\n"
+    store = _MemoryStore(
+        {
+            "securities/stocks/2026-10-27.csv": snapshot,
+            "securities/option_underlyings/2026-10-27.csv": snapshot,
+            backfill_marker_key("AAPL"): (
+                b'{"start":"2025-10-27","through":"2026-10-26"}'
+            ),
+            backfill_marker_key("MSFT"): (
+                b'{"start":"2025-10-27","through":"2026-10-26"}'
+            ),
+        }
+    )
+    monkeypatch.setattr(activities, "garage_store", lambda _settings: store)
+    monkeypatch.setattr(activities, "_thetadata_gate", _quiet_gate)
+    monkeypatch.setattr(activities, "_theta_client", lambda _api_key: _YearClient())
+    monkeypatch.setattr(
+        activities, "_summary_gap_symbols", lambda _settings, _symbols: {"AAPL"}
+    )
+    plan = activities.plan_option_backfill_activity("2026-10-28T12:30:00+00:00")
+    assert plan.symbols == ["AAPL"]
+    assert plan.covered == 1
+
+
+def test_backfill_append_fills_summaries_when_contracts_are_already_stored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sessions = ["2026-10-23", "2026-10-26"]
+    body = b"symbol,date\nAAPL,2026-10-23\n"
+    store = _MemoryStore({option_symbol_key(day, "AAPL"): body for day in sessions})
+    _required_settings(monkeypatch)
+    monkeypatch.setattr(activities.activity, "heartbeat", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(activities, "garage_store", lambda _settings: store)
+
+    class _Catalog:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("thetadata_etl.catalog.QuackCatalog", _Catalog)
+    monkeypatch.setattr(activities, "ensure_option_tables", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        activities,
+        "loaded_backfill_pairs",
+        lambda *_args, **_kwargs: {("AAPL", day) for day in sessions},
+    )
+
+    def reject_contracts(*_args, **_kwargs):
+        raise AssertionError("contracts should not be inserted again")
+
+    summarized: list[list[str]] = []
+    monkeypatch.setattr(activities, "append_backfill_csv", reject_contracts)
+    monkeypatch.setattr(
+        activities,
+        "backfill_symbol_summaries",
+        lambda _settings, symbols: summarized.append(list(symbols)),
+    )
+    appended = activities.append_option_backfill_batch_activity(
+        BackfillAppendRequest(
+            symbols=["AAPL"],
+            sessions=sessions,
+            window_start="2026-10-23",
+            window_end="2026-10-26",
+            batch_index=0,
+        )
+    )
+    assert appended == 0
+    assert summarized == [["AAPL"]]
+    assert backfill_marker_key("AAPL") in store.puts
+    assert not any("option_backfill/parts/" in key for key in store.puts)
 
 
 def test_backfill_fetch_skips_checkpointed_days_and_a_covering_marker(
